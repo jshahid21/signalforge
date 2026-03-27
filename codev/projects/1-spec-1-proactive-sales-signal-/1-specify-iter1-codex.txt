@@ -1,0 +1,61 @@
+**Findings (Most Critical First)**
+
+1. Ambiguous scoring thresholds and escalation criteria
+- The spec defines multiple thresholds (qualification 0.45, Tier 2 confidence >=0.75, solution mapping confidence <50, draft gate <60) but doesn’t define how `llm_severity_score`, “signal ambiguity score”, or “Tier 2 confidence score” are computed or normalized. This makes implementation and testing brittle. Specify the exact inputs, prompt schema, and normalization for these scores, or define a calibration procedure with fixed ranges.
+
+2. Human-in-the-loop override semantics are under-specified
+- The UI allows “Override and generate anyway” when `human_review_required = true`, but there is no corresponding state change in `CompanyState` or governance on how overrides affect auditability, cost budgets, or memory writes. Define explicit fields for override decisions and whether drafts generated under override are allowed into the memory store.
+
+3. Data retention, privacy, and compliance controls are too shallow for production use
+- The system stores draft content and signal summaries but does not define retention policy, encryption at rest, or user deletion guarantees beyond “Delete individual records.” This is a risk for enterprise users. Add explicit retention periods, encryption requirements, and opt-out controls.
+
+4. Spec contradicts itself on LLM call budgeting
+- Cost Strategy states “LLM calls per company ~8–12 (No)” but various stages (qualification, research, mapping, persona, synthesis per persona, draft per persona, chat assistant) could exceed this. Clarify the expected call budget under typical paths and how you’ll enforce it (e.g., max personas, batched prompts, combined stages).
+
+5. Failure handling for vendor/tooling outages lacks clear fallbacks
+- Error handling mentions “fallback source” but does not specify what the fallback is for each tier or how it’s configured. This is needed for an implementable and testable design.
+
+---
+
+**Clarity and Completeness of Requirements**
+- Strong: clear multi-agent pipeline, per-company isolation, HITL gating, and state schemas.
+- Missing: precise definitions for several scoring inputs, confidence computation, and “signal ambiguity score”.
+- Missing: explicit definitions for “signal density” and “threshold not met” in Tier 1.
+- Missing: exact UI behavior for multi-persona drafts (e.g., how Draft Panel selects which persona when multiple selected).
+
+**Technical Feasibility**
+- Feasible with LangGraph and a React frontend.
+- Use of `Send()` and state isolation is coherent.
+- “Hot reloadable capability map” is feasible but requires explicit file watching or endpoint; not specified.
+
+**Edge Cases and Error Scenarios**
+- Unclear behavior when company name normalization yields collisions (e.g., “Acme Inc” vs “Acme”).
+- Unclear behavior when user adds a custom persona that doesn’t fit expected role types or has missing fields.
+- Partial research results: the spec says partial is allowed but doesn’t say how “partial” affects subsequent confidence scores.
+
+**Security Considerations**
+- Data privacy risks acknowledged but insufficiently operationalized.
+- No mention of PII handling if job posts or signals contain personal names.
+- No mention of rate-limit abuse protections or API key handling.
+
+**Testing Strategy**
+- Good coverage across unit/integration/e2e.
+- LLM evaluation strategy is defined, but no acceptance thresholds or scoring rubric detail.
+- No tests for override flows or memory delete/export correctness.
+
+**Ambiguities or Missing Details**
+- Signal ambiguity score calculation undefined.
+- Tier 2 “confidence score” source undefined.
+- What constitutes “signal density” is undefined.
+- The “confidence score” in `SolutionMappingOutput` is 0–100, while other scores are 0–1; this mixed scale should be normalized or documented with rationale.
+- No explicit schema for prompts and validation for structured outputs.
+
+---
+
+---
+VERDICT: REQUEST_CHANGES
+SUMMARY: Solid architecture and workflows, but key scoring definitions, override semantics, and data governance are under-specified for implementation and testing.
+CONFIDENCE: HIGH
+---
+
+KEY_ISSUES: Missing/ambiguous scoring definitions and thresholds; HITL override behavior not specified in state/governance; insufficient data retention/privacy controls; unclear cost budgeting vs actual stage count; fallback source configuration undefined.

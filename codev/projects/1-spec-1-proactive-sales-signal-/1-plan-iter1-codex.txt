@@ -1,0 +1,32 @@
+**Review Findings (ordered by severity)**
+
+1. **Budget enforcement is underspecified and possibly misplaced.**  
+Spec requires the per-session budget to gate spend *before* additional calls (Tier escalation, LLM calls) and to halt pipeline when the cap is reached. The plan places enforcement in the API layer (Phase 6) but does not specify how pipeline agents will check the budget before making calls, which risks overspending during a single run. This is a behavioral risk.  
+File: `codev/plans/1-proactive-sales-signal-intelligence-engine.md`
+
+2. **Capability map generation flow omits product URL crawling/extraction step.**  
+Spec §8.1 explicitly allows a product URL as input with a crawl/extract step. The plan’s Phase 4 describes LLM generation from seller profile inputs but does not include URL crawling/extraction as a task or dependency, which is a requirements gap.  
+File: `codev/plans/1-proactive-sales-signal-intelligence-engine.md`
+
+3. **HITL review reasons mapping not planned.**  
+Spec includes specific `HumanReviewReason` enums and expects accurate reasons in state/UI. The plan does not include explicit tasks/tests to ensure these reasons are set consistently (e.g., `LOW_CONFIDENCE`, `SIGNAL_AMBIGUOUS`, `PERSONA_UNRESOLVED`, `DRAFT_QUALITY`). This risks partial alignment with spec and UI behavior.  
+File: `codev/plans/1-proactive-sales-signal-intelligence-engine.md`
+
+4. **Session persistence scope vs. spec is not fully clarified.**  
+Spec allows sessions persisted locally via IndexedDB or SQLite. Plan uses SQLite, but does not indicate *frontend* behavior for offline resume and state restoration (spec wants re-opening app to restore last session state including HITL gate state). This likely belongs in Phase 7 with explicit UI state rehydration.  
+File: `codev/plans/1-proactive-sales-signal-intelligence-engine.md`
+
+**Other Notes / Suggestions (non-blocking)**
+
+- The plan includes SSE for chat streaming while WebSocket is used for pipeline updates. Spec doesn’t forbid SSE, so this is fine, but it would be good to call out why SSE vs WebSocket for chat to avoid mismatched client expectations.  
+File: `codev/plans/1-proactive-sales-signal-intelligence-engine.md`
+- Testing is strong overall. Consider adding explicit tests for `HumanReviewReason` assignment in boundary cases (low confidence vs persona unresolved) to match spec semantics.
+
+---
+
+VERDICT: REQUEST_CHANGES  
+SUMMARY: Solid structure and coverage, but needs explicit budget enforcement in the pipeline, capability map URL ingestion, and HITL review reason handling to fully align with the spec.  
+CONFIDENCE: HIGH  
+---
+
+KEY_ISSUES: Budget enforcement placement/behavior unclear; capability map URL crawling/extraction missing; HITL review reasons mapping not planned.

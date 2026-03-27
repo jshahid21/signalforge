@@ -1,0 +1,12 @@
+{
+  "name": "signalforge",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "build": "cd frontend && npm run build",
+    "test": "venv/bin/pytest tests/ -v --tb=short",
+    "dev:backend": "python3 -m backend",
+    "dev:frontend": "cd frontend && npm run dev",
+    "lint:frontend": "cd frontend && npm run lint"
+  }
+}

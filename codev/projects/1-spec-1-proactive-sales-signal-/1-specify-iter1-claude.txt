@@ -1,0 +1,118 @@
+## Specification Review: Proactive Sales Signal Intelligence Engine (SignalForge)
+
+I've read the full 1,162-line specification. This is an impressively detailed and well-structured document. Let me provide my assessment across the required dimensions.
+
+---
+
+### 1. Clarity and Completeness of Requirements
+
+**Strengths:**
+- The spec is exceptionally well-organized with a clear ToC and consistent structure across all 15 sections.
+- Data models are fully typed with Python `TypedDict` definitions — a builder would know exactly what state flows through the pipeline.
+- Agent definitions follow a consistent template: Role → Responsibilities → Inputs → Outputs → Constraints.
+- The persona generation section is particularly strong — signal-to-persona bias mapping, candidate pool, and a concrete example of "good" output.
+- UI wireframe in ASCII is clear enough to convey the workspace layout and interaction model.
+- Cost strategy is concrete with actual dollar estimates per operation.
+
+**Gaps/Issues:**
+
+1. **Seller Profile setup flow is underspecified.** Section 2.1 mentions the user "must configure their Seller Profile" on first use, and it's in the `AgentState` schema, but there's no UI section describing this onboarding flow. Where does the user configure this? Is it in Settings? Is there a first-run wizard? The Draft Agent and Solution Mapping Agent depend on this, so the entry point matters.
+
+2. **Draft Agent injects seller profile but the spec doesn't say how.** Section 5.9 (Draft Agent) says it uses `synthesis_outputs` and `solution_mapping` as inputs — but the seller profile (which maps vendor-agnostic capabilities to the seller's actual products) isn't listed as an explicit input. The spec says solution mapping is vendor-agnostic, and the seller applies their own positioning. But the draft itself should be grounded in the seller's products, right? There's a gap between "vendor-agnostic solution areas" and "technically credible outreach for *my* products." Where does the seller profile get injected into the draft prompt?
+
+3. **Session lifecycle is unclear.** What defines a "session"? Is it a browser session? Is it persisted? Can a user return to a session later? If they close the tab mid-pipeline (at the HITL gate), is state preserved? The cost budget is per-session, so this matters.
+
+4. **No mention of authentication or multi-user.** Section 14.5 says "Memory store is local per-user" — but there's no discussion of how users are identified. Is this a single-user local app? A hosted web app with accounts? This affects architectural decisions significantly.
+
+5. **API key management is absent.** The system uses JSearch API, Tavily, and LLM providers — all requiring API keys. No mention of how these are configured, stored, or validated.
+
+---
+
+### 2. Technical Feasibility
+
+**No major blockers.** The technology choices are sound:
+- LangGraph's `Send()` API supports the parallel fan-out pattern described.
+- The tiered signal acquisition with conditional branching maps well to LangGraph's conditional edges.
+- The HITL gate is a well-understood LangGraph pattern (`interrupt_before`/`interrupt_after`).
+- The cost estimates are realistic for the APIs mentioned.
+
+**Minor concerns:**
+
+6. **Chat Assistant scope vs. capabilities tension.** The Chat Assistant is described as read-only to `CompanyState`, yet it should "offer draft refinement suggestions." If a user says "make this more concise" and the assistant produces a refined draft, how does that become the actual draft? The spec says "applied locally by the user, not auto-committed" — but there's no UI mechanism described for accepting assistant-suggested edits into the draft panel. A copy-paste workflow from chat to draft editor would be clunky.
+
+7. **Hot-reloadable capability map** (Section 8.1) — nice to have but adds complexity. Is this a v1 requirement or aspirational? If a map is reloaded mid-pipeline, what happens to in-flight solution mappings?
+
+---
+
+### 3. Edge Cases and Error Scenarios
+
+**Well-covered overall.** Section 11 is thorough with per-stage error classification, graceful degradation rules, and retry policy. Good that it explicitly calls out "no infinite retry loops."
+
+**Gaps:**
+
+8. **What happens when ALL companies are skipped?** If a user enters 5 companies and all fail signal qualification, the pipeline completes with zero actionable output. Is there a specific UX for this? A suggestion to try different companies?
+
+9. **Duplicate or overlapping company names.** The orchestrator validates "no duplicates," but what about near-duplicates? "Stripe" vs "Stripe, Inc." vs "stripe.com" — how is normalization handled? The spec says "normalize company names → company_id slugs" but doesn't define the normalization rules.
+
+10. **What if memory store has stale/bad examples?** If early approved drafts are low quality, they'll poison future drafts via few-shot injection. Is there a mechanism to curate the memory store beyond "delete individual records" in settings?
+
+---
+
+### 4. Security Considerations
+
+11. **Minimal security discussion.** Section 14.4 mentions local storage and API TOS compliance, which is good. But there's no mention of:
+    - Input sanitization (company names could contain injection payloads for LLM prompts)
+    - Rate limiting on the API layer (if this is a hosted web app)
+    - Data retention policies for the memory store
+    
+    For a v1 spec of what appears to be a local-first tool, this is acceptable but should be flagged.
+
+---
+
+### 5. Testing Strategy
+
+**Strong.** Section 13 covers unit, integration, E2E, and LLM evaluation. The fixture library approach (10 canonical companies with expected outputs) is excellent. The LLM-as-judge rubrics are appropriately scoped.
+
+**One gap:**
+
+12. **No load/performance testing mentioned.** The spec sets a target of <90 seconds for 5 companies (Section 14.3) but doesn't include performance testing in the test strategy. Given parallel execution and multiple API calls, this should be validated.
+
+---
+
+### 6. Other Observations
+
+13. **The spec is very large for a single deliverable.** This covers: a multi-agent LangGraph pipeline, a React web app with workspace UI, a REST+WebSocket API layer, a persistent memory store, and a chat assistant. While the spec is internally consistent, I'd want to confirm the implementation plan decomposes this into manageable phases. As a spec, it's well-bounded ("v1" limitations are explicitly called out), but a builder could still be overwhelmed.
+
+14. **Success criteria are user-centric and testable** — this is excellent. Criteria #7 ("no hallucinated tech stacks, no generic claims, clear confidence scores") is a concrete, verifiable bar.
+
+15. **The confidence gate has two thresholds that could confuse:** Solution Mapping flags `human_review_required` at `< 50`, but Draft Agent's confidence gate is at `< 60`. This means there's a 50–59 range where the system doesn't flag for review but *does* generate a draft. Is that intentional? It seems like it should be, but worth confirming the user experience: a company could have a yellow "review" badge AND a generated draft, or no badge and no draft (impossible by the math, but the two thresholds interacting could be confusing to a builder).
+
+---
+
+## Summary of Key Issues
+
+| # | Issue | Severity |
+|---|-------|----------|
+| 1 | Seller Profile setup flow not described in UI section | Medium |
+| 2 | Seller Profile injection into Draft Agent not explicit in I/O | Medium |
+| 3 | "Session" lifecycle undefined (persistence, resume) | Medium |
+| 4 | No auth/user identity model | Low (if local-first) |
+| 5 | API key management absent | Low |
+| 6 | Chat assistant → draft edit acceptance flow unclear | Low |
+| 8 | UX for "all companies skipped" not defined | Low |
+| 9 | Company name normalization rules undefined | Low |
+| 15 | Two confidence thresholds (50 and 60) interaction unclear | Low |
+
+---
+
+```
+---
+VERDICT: COMMENT
+SUMMARY: Exceptionally thorough spec with a few medium-severity gaps around seller profile integration, session lifecycle, and one I/O inconsistency in the Draft Agent.
+CONFIDENCE: HIGH
+---
+KEY_ISSUES:
+- Seller Profile setup UX and injection into Draft Agent prompts are mentioned but not fully wired through the spec (Sections 2.1, 5.9, 9)
+- "Session" is undefined — affects cost budget scoping, state persistence, and resume-after-close behavior
+- Two confidence thresholds (50 for review flag, 60 for draft gate) interact in a 50–59 range that should be explicitly documented as intentional
+```

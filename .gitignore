@@ -9,8 +9,25 @@ node_modules/
 
 # Build output
 dist/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+.venv/
+venv/
+*.egg-info/
 
 # OS files
 .DS_Store
 *.swp
 *.swo
+
+# Environment
+.env
+.env.local
+
+# Frontend build
+frontend/dist/
+frontend/node_modules/
