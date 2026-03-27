@@ -40,12 +40,22 @@ class JSearchClient:
         Returns list of job dicts with at least:
           - job_id, job_title, job_description, date_posted
         """
-        query = f"{company_name} engineer"
+        query = f"{company_name} IT infrastructure cloud"
+        # JSearch date_posted valid values: all, today, 3days, week, month
+        if days_ago <= 1:
+            date_posted = "today"
+        elif days_ago <= 3:
+            date_posted = "3days"
+        elif days_ago <= 7:
+            date_posted = "week"
+        else:
+            date_posted = "month"
         params = {
             "query": query,
             "page": "1",
             "num_pages": str(num_pages),
-            "date_posted": f"{days_ago}d",
+            "date_posted": date_posted,
+            "country": "us",
         }
         async with httpx.AsyncClient(timeout=30) as client:
             response = await client.get(
