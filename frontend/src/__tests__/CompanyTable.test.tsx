@@ -138,4 +138,25 @@ describe('CompanyTable', () => {
     )
     expect(screen.getByText('75%')).toBeInTheDocument()
   })
+
+  it('does not throw when API omits company_name or current_stage', () => {
+    const partial = {
+      company_id: 'acme',
+      company_name: undefined,
+      status: 'running' as const,
+      current_stage: undefined,
+      generated_personas: [],
+      selected_personas: [],
+      synthesis_outputs: {},
+      drafts: {},
+      total_cost_usd: 0,
+    } as unknown as CompanyState
+    render(
+      <CompanyTable companies={[partial]} selectedCompanyId={null} onSelectCompany={() => {}} />
+    )
+    const row = screen.getByTestId('company-row-acme')
+    expect(row).toBeInTheDocument()
+    expect(row.querySelector('.font-medium')).toHaveTextContent('—')
+    expect(screen.getByTestId('status-badge-running')).toBeInTheDocument()
+  })
 })

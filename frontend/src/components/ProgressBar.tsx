@@ -14,14 +14,14 @@ const STAGE_LABELS: Record<string, string> = {
   generating: 'Generating',
 }
 
-function stageIndex(stage: string): number {
-  const normalized = stage.toLowerCase().replace('_', '')
+function stageIndex(stage: string | undefined | null): number {
+  const normalized = String(stage ?? '').toLowerCase().replace(/_/g, '')
   const idx = STAGES.findIndex(s => normalized.includes(s))
   return idx === -1 ? 0 : idx
 }
 
 interface Props {
-  currentStage: string
+  currentStage?: string | null
   status: PipelineStatus | string
 }
 

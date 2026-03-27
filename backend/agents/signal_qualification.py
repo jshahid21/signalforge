@@ -20,6 +20,8 @@ import json
 import statistics
 from typing import Any
 
+from langchain_core.messages import HumanMessage
+
 from backend.config.capability_map import CapabilityMap
 from backend.models.enums import HumanReviewReason, PipelineStatus, SignalTier
 from backend.models.state import CompanyState, CostMetadata, QualifiedSignal, RawSignal
@@ -91,6 +93,29 @@ def parse_llm_severity_response(response_text: str) -> dict[str, float] | None:
         return None
 
 
+def _normalized_llm_provider(llm_provider: str) -> str:
+    p = (llm_provider or "").strip().lower()
+    if p in ("openai", "gpt", "chatgpt", "open_ai"):
+        return "openai"
+    return "anthropic"
+
+
+def _message_content_to_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for block in content:
+            if isinstance(block, str):
+                parts.append(block)
+            elif isinstance(block, dict) and "text" in block:
+                parts.append(str(block["text"]))
+            else:
+                parts.append(str(block))
+        return "".join(parts)
+    return str(content)
+
+
 async def call_llm_severity(
     signals: list[RawSignal],
     llm_provider: str,
@@ -100,28 +125,40 @@ async def call_llm_severity(
     if not llm_model:
         return None, 0
 
+    route = _normalized_llm_provider(llm_provider)
+    openai_id = llm_model.strip().lower()
+    anthropic_id = llm_model.strip()
+
     try:
-        from langchain_anthropic import ChatAnthropic
-        from langchain_core.messages import HumanMessage
+        if route == "openai":
+            from langchain_openai import ChatOpenAI
 
-        llm = ChatAnthropic(model=llm_model, max_tokens=256, temperature=0)
-        prompt = _build_severity_prompt(signals)
+            llm = ChatOpenAI(model=openai_id, max_tokens=256, temperature=0)
+        else:
+            from langchain_anthropic import ChatAnthropic
 
-        # 1 retry on rate limit
-        for attempt in range(2):
-            try:
-                response = await llm.ainvoke([HumanMessage(content=prompt)])
-                tokens = response.usage_metadata.get("total_tokens", 0) if response.usage_metadata else 0
-                scores = parse_llm_severity_response(response.content)
-                return scores, tokens
-            except Exception as exc:
-                if attempt == 0 and "rate_limit" in str(exc).lower():
-                    import asyncio
-                    await asyncio.sleep(2)
-                    continue
-                return None, 0
+            llm = ChatAnthropic(model=anthropic_id, max_tokens=256, temperature=0)
     except ImportError:
         return None, 0
+
+    prompt = _build_severity_prompt(signals)
+
+    # 1 retry on rate limit
+    for attempt in range(2):
+        try:
+            response = await llm.ainvoke([HumanMessage(content=prompt)])
+            meta = getattr(response, "usage_metadata", None) or {}
+            tokens = int(meta.get("total_tokens", 0) or 0)
+            text = _message_content_to_text(response.content)
+            scores = parse_llm_severity_response(text)
+            return scores, tokens
+        except Exception as exc:
+            if attempt == 0 and "rate_limit" in str(exc).lower():
+                import asyncio
+
+                await asyncio.sleep(2)
+                continue
+            return None, 0
 
     return None, 0
 

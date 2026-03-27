@@ -54,6 +54,7 @@ interface RowProps {
 function CompanyRow({ company, isSelected, onClick }: RowProps) {
   const confidence = company.qualified_signal?.composite_score
   const confidencePct = confidence != null ? Math.round(confidence * 100) : null
+  const rowId = company.company_id || 'unknown'
 
   return (
     <tr
@@ -62,16 +63,16 @@ function CompanyRow({ company, isSelected, onClick }: RowProps) {
         isSelected ? 'bg-blue-50 border-l-2 border-blue-500' : '',
       ].join(' ')}
       onClick={onClick}
-      data-testid={`company-row-${company.company_id}`}
+      data-testid={`company-row-${rowId}`}
     >
       <td className="px-4 py-3">
-        <div className="font-medium text-gray-900">{company.company_name}</div>
+        <div className="font-medium text-gray-900">{company.company_name ?? '—'}</div>
         <div className="mt-1">
-          <ProgressBar currentStage={company.current_stage} status={company.status} />
+          <ProgressBar currentStage={company.current_stage} status={company.status ?? 'pending'} />
         </div>
       </td>
       <td className="px-4 py-3">
-        <StatusBadge status={company.status} />
+        <StatusBadge status={company.status ?? 'pending'} />
       </td>
       <td className="px-4 py-3 text-right text-sm text-gray-600">
         {confidencePct != null ? (
@@ -107,7 +108,8 @@ export function CompanyTable({ companies, selectedCompanyId, onSelectCompany }: 
   const [statusFilter, setStatusFilter] = useState('')
 
   const filtered = companies.filter(c => {
-    const nameMatch = c.company_name.toLowerCase().includes(filter.toLowerCase())
+    const name = (c.company_name ?? '').toLowerCase()
+    const nameMatch = name.includes(filter.toLowerCase())
     const statusMatch = !statusFilter || c.status === statusFilter
     return nameMatch && statusMatch
   })
@@ -152,12 +154,12 @@ export function CompanyTable({ companies, selectedCompanyId, onSelectCompany }: 
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-100">
-            {filtered.map(company => (
+            {filtered.map((company, index) => (
               <CompanyRow
-                key={company.company_id}
+                key={company.company_id ?? `company-${index}`}
                 company={company}
                 isSelected={selectedCompanyId === company.company_id}
-                onClick={() => onSelectCompany(company.company_id)}
+                onClick={() => company.company_id && onSelectCompany(company.company_id)}
               />
             ))}
           </tbody>

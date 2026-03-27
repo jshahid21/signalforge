@@ -115,7 +115,8 @@ async def update_session_budget(body: SessionBudgetBody) -> dict:
 
 
 class CapabilityMapRequest(BaseModel):
-    product_list: Optional[list[str]] = None
+    # Frontend sends newline-separated text for product_list; allow list for API clients
+    product_list: str | list[str] | None = None
     product_url: Optional[str] = None
     territory_text: Optional[str] = None
 
@@ -187,6 +188,14 @@ async def delete_capability_map_entry(entry_id: str) -> dict:
     return {"status": "deleted", "id": entry_id}
 
 
+def _product_list_as_str(value: str | list[str] | None) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, list):
+        return "\n".join(str(x) for x in value)
+    return str(value)
+
+
 @router.post("/capability-map/generate", status_code=202)
 async def generate_capability_map(body: CapabilityMapRequest) -> dict:
     """Generate and save a capability map from seller profile inputs.
@@ -197,30 +206,48 @@ async def generate_capability_map(body: CapabilityMapRequest) -> dict:
     from backend.capability_map_generator import (
         CapabilityMapGeneratorInput,
         generate_capability_map as _generate,
-        save_capability_map,
     )
 
     config = load_config()
 
+    if not (config.api_keys.llm_model or "").strip():
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "LLM model is not set. Open Settings → API Keys and set LLM provider and model "
+                "(OpenAI: set provider to openai / gpt / chatgpt and model e.g. gpt-4o-mini; "
+                "ensure OPENAI_API_KEY is set for the backend. Anthropic: set ANTHROPIC_API_KEY.)"
+            ),
+        )
+
     inputs = CapabilityMapGeneratorInput(
-        product_list=body.product_list,
-        product_url=body.product_url,
-        territory_text=body.territory_text,
+        product_list=_product_list_as_str(body.product_list),
+        product_url=(body.product_url or ""),
+        territory=(body.territory_text or ""),
     )
 
-    capability_map = await _generate(inputs, llm_model=config.api_keys.llm_model)
+    capability_map = await _generate(
+        inputs,
+        llm_model=config.api_keys.llm_model.strip(),
+        llm_provider=config.api_keys.llm_provider,
+    )
     if capability_map is None:
         raise HTTPException(
             status_code=422,
-            detail="Capability map generation failed. Check LLM model configuration.",
+            detail=(
+                "Capability map generation failed. Common causes: no usable input "
+                "(product list, URL, or territory text), missing or invalid OPENAI_API_KEY / "
+                "ANTHROPIC_API_KEY, wrong model id for your provider, or the model returned "
+                "unparseable JSON. Check the backend terminal for errors."
+            ),
         )
 
-    save_capability_map(capability_map)
+    # Generator already persists via save_capability_map; response uses .entries
     return {
         "status": "generated",
-        "capability_count": len(capability_map.capabilities),
+        "capability_count": len(capability_map.entries),
         "capabilities": [
             {"id": c.id, "label": c.label}
-            for c in capability_map.capabilities
+            for c in capability_map.entries
         ],
     }

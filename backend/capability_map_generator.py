@@ -16,15 +16,31 @@ Generated map is hot-reloadable (no restart required after edits).
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 from typing import Any
 
+logger = logging.getLogger(__name__)
+
+from langchain_core.messages import HumanMessage
+
 try:
     from langchain_anthropic import ChatAnthropic
-    from langchain_core.messages import HumanMessage
 except ImportError:
     ChatAnthropic = None  # type: ignore[assignment,misc]
-    HumanMessage = None  # type: ignore[assignment]
+
+try:
+    from langchain_openai import ChatOpenAI
+except ImportError:
+    ChatOpenAI = None  # type: ignore[assignment,misc]
+
+
+def _normalized_llm_provider(llm_provider: str) -> str:
+    """Return 'openai' or 'anthropic' for routing."""
+    p = (llm_provider or "").strip().lower()
+    if p in ("openai", "gpt", "chatgpt", "open_ai"):
+        return "openai"
+    return "anthropic"
 
 
 @dataclass
@@ -63,6 +79,23 @@ Output ONLY valid JSON in this exact format:
 }}
 
 Generate 3–6 capability categories. Be specific and actionable."""
+
+
+def _stringify_llm_content(raw: str | list[Any] | Any) -> str:
+    """Normalize AIMessage.content (str or multimodal blocks) to plain text."""
+    if isinstance(raw, str):
+        return raw
+    if isinstance(raw, list):
+        parts: list[str] = []
+        for block in raw:
+            if isinstance(block, str):
+                parts.append(block)
+            elif isinstance(block, dict) and "text" in block:
+                parts.append(str(block["text"]))
+            else:
+                parts.append(str(block))
+        return "".join(parts)
+    return str(raw)
 
 
 def _parse_generation_response(text: str) -> list[dict[str, Any]]:
@@ -104,7 +137,16 @@ async def generate_capability_map(
     Crawls product_url if provided. Passes all content to LLM for grouping.
     Saves generated map to disk and returns the CapabilityMap object.
     """
-    if not llm_model or ChatAnthropic is None:
+    if not llm_model:
+        return None
+
+    route = _normalized_llm_provider(llm_provider)
+    # OpenAI API expects lowercase model ids (e.g. gpt-4o-mini, not GPT-4o-mini)
+    openai_model_id = llm_model.strip().lower()
+    anthropic_model_id = llm_model.strip()
+    if route == "openai" and ChatOpenAI is None:
+        return None
+    if route == "anthropic" and ChatAnthropic is None:
         return None
 
     # Collect all content
@@ -115,9 +157,17 @@ async def generate_capability_map(
 
     if inputs.product_url.strip():
         from backend.tools.web_crawler import crawl_url
-        page_text = await crawl_url(inputs.product_url.strip())
+        url = inputs.product_url.strip()
+        page_text = await crawl_url(url)
         if page_text:
-            content_parts.append(f"Product page content (from {inputs.product_url}):\n{page_text[:2000]}")
+            content_parts.append(f"Product page content (from {url}):\n{page_text[:2000]}")
+        else:
+            # Many sites block bots or render via JS — still give the LLM the URL to reason from
+            content_parts.append(
+                "Product/solutions page URL (page text could not be fetched; "
+                "infer capabilities from the URL path and typical offerings):\n"
+                f"{url}"
+            )
 
     if inputs.territory.strip():
         content_parts.append(f"Territory/Focus Area:\n{inputs.territory.strip()}")
@@ -129,13 +179,21 @@ async def generate_capability_map(
     prompt = _build_generation_prompt(extracted_content)
 
     try:
-        llm = ChatAnthropic(model=llm_model, max_tokens=2000, temperature=0)
+        if route == "openai":
+            llm = ChatOpenAI(model=openai_model_id, max_tokens=2000, temperature=0)
+        else:
+            llm = ChatAnthropic(model=anthropic_model_id, max_tokens=2000, temperature=0)
         response = await llm.ainvoke([HumanMessage(content=prompt)])
-        capabilities_data = _parse_generation_response(str(response.content))
-    except Exception:
+        capabilities_data = _parse_generation_response(_stringify_llm_content(response.content))
+    except Exception as exc:
+        logger.warning("Capability map LLM call failed: %s", exc, exc_info=True)
         return None
 
     if not capabilities_data:
+        logger.warning(
+            "Capability map: LLM returned no parseable capabilities (model=%s)",
+            openai_model_id if route == "openai" else anthropic_model_id,
+        )
         return None
 
     # Build CapabilityMap object and persist it

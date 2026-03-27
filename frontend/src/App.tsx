@@ -304,8 +304,13 @@ export default function App() {
                 onSelectCompany={setSelectedCompany}
               />
               {allSkipped && (
-                <div className="p-4 bg-yellow-50 border-t border-yellow-200 text-sm text-yellow-800">
-                  No actionable signals found for any company. Try adding different companies or adjusting your capability map.
+                <div className="p-4 bg-yellow-50 border-t border-yellow-200 text-sm text-yellow-800 space-y-1">
+                  <p className="font-medium">No actionable signals for any company (all skipped).</p>
+                  <p className="text-yellow-900/90">
+                    Common fixes: ensure <strong>JSearch</strong> and <strong>Tavily</strong> keys are set and returning results;
+                    build a <strong>capability map</strong> whose <em>problem_signals</em> keywords appear in job text;
+                    set <strong>LLM provider/model</strong> so qualification can score signals (OpenAI and Anthropic are supported).
+                  </p>
                 </div>
               )}
             </div>

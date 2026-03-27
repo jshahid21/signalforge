@@ -92,14 +92,14 @@ function ApiKeysTab() {
   return (
     <div className="space-y-4">
       {[
-        { label: 'JSearch API Key', value: jsearch, set: setJsearch, type: 'password' },
-        { label: 'Tavily API Key', value: tavily, set: setTavily, type: 'password' },
-        { label: 'LLM Provider', value: llmProvider, set: setLlmProvider, type: 'text' },
-        { label: 'LLM Model', value: llmModel, set: setLlmModel, type: 'text' },
-      ].map(({ label, value, set, type }) => (
+        { label: 'JSearch API Key', value: jsearch, set: setJsearch, type: 'password' as const, placeholder: '•••••••••' },
+        { label: 'Tavily API Key', value: tavily, set: setTavily, type: 'password' as const, placeholder: '•••••••••' },
+        { label: 'LLM Provider', value: llmProvider, set: setLlmProvider, type: 'text' as const, placeholder: 'openai' },
+        { label: 'LLM Model', value: llmModel, set: setLlmModel, type: 'text' as const, placeholder: 'gpt-4o-mini (lowercase)' },
+      ].map(({ label, value, set, type, placeholder }) => (
         <div key={label}>
           <label className="block text-sm font-medium text-gray-700">{label}</label>
-          <input type={type} value={value} onChange={e => set(e.target.value)} placeholder="•••••••••"
+          <input type={type} value={value} onChange={e => set(e.target.value)} placeholder={placeholder}
             className="mt-1 w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
         </div>
       ))}
