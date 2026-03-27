@@ -11,12 +11,17 @@ LangGraph interrupt() usage:
 State transitions:
     Before interrupt: awaiting_persona_selection = True
     After resume:     selected_personas populated, awaiting_persona_selection = False
+
+HITL flow in graph:
+    company_pipeline [fan-out] → hitl_gate → END
+    company_pipeline returns AWAITING_HUMAN when personas need selection.
+    hitl_gate detects these, calls interrupt(), and on resume dispatches
+    synthesis-only company_pipeline runs via Command(send=[Send(...)]).
 """
 from __future__ import annotations
 
-from typing import Any
-
-from backend.models.state import CompanyState
+from backend.models.enums import PipelineStatus
+from backend.models.state import AgentState, CompanyInput, CompanyState
 
 
 def run_persona_selection_gate(cs: CompanyState) -> CompanyState:
@@ -28,8 +33,7 @@ def run_persona_selection_gate(cs: CompanyState) -> CompanyState:
     Returns the updated company state.
     """
     cs = dict(cs)  # type: ignore[assignment]
-    # Clear any previously selected personas to require fresh selection
-    cs["status"] = "awaiting_human"  # type: ignore[index]
+    cs["status"] = PipelineStatus.AWAITING_HUMAN  # type: ignore[index]
     cs["current_stage"] = "awaiting_persona_selection"  # type: ignore[index]
     return cs  # type: ignore[return-value]
 
@@ -51,34 +55,78 @@ def apply_persona_selection(
     cs = dict(cs)  # type: ignore[assignment]
     cs["selected_personas"] = valid_selections  # type: ignore[index]
     cs["current_stage"] = "synthesis"  # type: ignore[index]
-    cs["status"] = "running"  # type: ignore[index]
+    cs["status"] = PipelineStatus.RUNNING  # type: ignore[index]
     return cs  # type: ignore[return-value]
 
 
-async def hitl_persona_selection_node(state: Any) -> dict:
+async def hitl_gate_node(state: AgentState) -> dict:
     """LangGraph node — pauses the graph for human persona selection.
 
-    This node is called by LangGraph after persona generation. It uses
-    LangGraph's interrupt() to pause execution until the API provides
-    selected_personas via Command(resume=...).
+    Sits between company_pipeline fan-out results and END. Detects companies
+    with current_stage == "awaiting_persona_selection", calls interrupt() to
+    pause the graph, and on resume dispatches synthesis-only company_pipeline
+    runs via Command(send=[Send(...)]).
 
-    The interrupt value is the list of generated personas for the UI to display.
+    Requires the graph to be compiled with a MemorySaver checkpointer.
+
+    Resume value format: {company_id: [persona_id, ...], ...}
     """
+    from backend.config.capability_map import load_capability_map
+    from backend.config.loader import load_config
+
     try:
+        from langgraph.types import Command, Send
         from langgraph.types import interrupt as langgraph_interrupt
     except ImportError:
-        # Fallback: if LangGraph interrupt not available, return state unchanged
-        return {}
+        # LangGraph interrupt not available — return no-op
+        return {"awaiting_persona_selection": False}
 
     company_states = state.get("company_states", {})
-    # Collect all companies awaiting selection
-    pending: dict[str, list] = {}
-    for company_id, cs in company_states.items():
-        if cs.get("current_stage") == "awaiting_persona_selection":
-            pending[company_id] = cs.get("generated_personas", [])
+    awaiting = {
+        company_id: cs
+        for company_id, cs in company_states.items()
+        if cs.get("current_stage") == "awaiting_persona_selection"
+    }
 
-    if pending:
-        # Interrupt and wait for human input
-        langgraph_interrupt({"awaiting_persona_selection": pending})
+    if not awaiting:
+        return {"awaiting_persona_selection": False}
 
-    return {"awaiting_persona_selection": False}
+    # Pause and surface generated personas to the UI/API
+    selections: dict[str, list[str]] = langgraph_interrupt({
+        "awaiting_persona_selection": {
+            company_id: cs.get("generated_personas", [])
+            for company_id, cs in awaiting.items()
+        }
+    })
+    # selections = {company_id: [persona_id, ...]} — provided by Command(resume=...)
+
+    # Apply selections and dispatch synthesis runs
+    config = load_config()
+    capability_map = load_capability_map()
+
+    updated_states: dict = {}
+    sends: list = []
+    for company_id, cs in awaiting.items():
+        selected_ids = selections.get(company_id, []) if isinstance(selections, dict) else []
+        updated_cs = apply_persona_selection(cs, selected_ids)
+        updated_states[company_id] = updated_cs
+        sends.append(Send("company_pipeline", CompanyInput(
+            company_state=updated_cs,
+            seller_profile=state.get("seller_profile", {}),  # type: ignore[arg-type]
+            max_budget_usd=config.session_budget.max_usd,
+            total_cost_usd_at_dispatch=state.get("total_cost_usd", 0.0),
+            capability_map=capability_map,
+            jsearch_api_key=config.api_keys.jsearch,
+            tavily_api_key=config.api_keys.tavily,
+            llm_provider=config.api_keys.llm_provider,
+            llm_model=config.api_keys.llm_model,
+        )))
+
+    return Command(  # type: ignore[return-value]
+        update={
+            "company_states": updated_states,
+            "awaiting_persona_selection": False,
+            "awaiting_review": [],
+        },
+        send=sends,
+    )

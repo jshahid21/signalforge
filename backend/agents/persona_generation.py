@@ -370,4 +370,12 @@ async def run_persona_generation(
     cs["recommended_outreach_sequence"] = sequence  # type: ignore[index]
     cs["current_stage"] = "awaiting_persona_selection"  # type: ignore[index]
 
+    # PERSONA_UNRESOLVED: < 2 personas generated (spec §5.5)
+    if len(personas) < 2:
+        cs["human_review_required"] = True  # type: ignore[index]
+        existing_reasons = list(cs.get("human_review_reasons", []))  # type: ignore[call-overload]
+        if HumanReviewReason.PERSONA_UNRESOLVED not in existing_reasons:
+            existing_reasons.append(HumanReviewReason.PERSONA_UNRESOLVED)
+        cs["human_review_reasons"] = existing_reasons  # type: ignore[index]
+
     return cs, 0.0  # type: ignore[return-value]

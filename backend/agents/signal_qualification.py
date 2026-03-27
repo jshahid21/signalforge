@@ -21,7 +21,7 @@ import statistics
 from typing import Any
 
 from backend.config.capability_map import CapabilityMap
-from backend.models.enums import PipelineStatus, SignalTier
+from backend.models.enums import HumanReviewReason, PipelineStatus, SignalTier
 from backend.models.state import CompanyState, CostMetadata, QualifiedSignal, RawSignal
 
 QUALIFICATION_THRESHOLD = 0.45
@@ -253,5 +253,13 @@ async def run_signal_qualification(
     updated_cs["current_stage"] = (
         "research" if qualified_signal["qualified"] else "done"
     )
+
+    # SIGNAL_AMBIGUOUS: ambiguity_score > 0.7 without Tier 2 resolution (spec §5.5)
+    if ambiguity_score > 0.7 and tier_used != SignalTier.TIER_2:
+        updated_cs["human_review_required"] = True  # type: ignore[index]
+        existing_reasons = list(updated_cs.get("human_review_reasons", []))  # type: ignore[call-overload]
+        if HumanReviewReason.SIGNAL_AMBIGUOUS not in existing_reasons:
+            existing_reasons.append(HumanReviewReason.SIGNAL_AMBIGUOUS)
+        updated_cs["human_review_reasons"] = existing_reasons  # type: ignore[index]
 
     return updated_cs, cost_incurred  # type: ignore[return-value]

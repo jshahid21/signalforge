@@ -22,9 +22,14 @@ Nodes are imported from backend/agents/. This module only wires the graph.
 """
 from __future__ import annotations
 
+from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, StateGraph
 
-from backend.agents.hitl_gate import apply_persona_selection, run_persona_selection_gate
+from backend.agents.hitl_gate import (
+    apply_persona_selection,
+    hitl_gate_node,
+    run_persona_selection_gate,
+)
 from backend.agents.orchestrator import dispatch_companies, orchestrator_node
 from backend.agents.persona_generation import run_persona_generation
 from backend.agents.research import run_research
@@ -204,12 +209,31 @@ async def company_pipeline(input: CompanyInput) -> dict:
 def build_pipeline():
     """Assemble and compile the LangGraph StateGraph.
 
-    Returns a compiled graph ready to invoke with AgentState.
+    Graph topology:
+        orchestrator → [dispatch_companies → Send("company_pipeline")] → hitl_gate → END
+
+    The hitl_gate node:
+    - Detects companies awaiting persona selection
+    - Calls interrupt() to pause the graph for human input
+    - On resume, applies selections and dispatches synthesis-only company_pipeline runs
+    - Requires a MemorySaver checkpointer to support interrupt/resume
+
+    Usage with HITL:
+        config = {"configurable": {"thread_id": "<unique-id>"}}
+        # First invocation — may pause at hitl_gate
+        result = await graph.ainvoke(initial_state, config=config)
+        # Resume with persona selections: {company_id: [persona_id, ...]}
+        result = await graph.ainvoke(
+            Command(resume={"stripe": ["persona-id-1", "persona-id-2"]}),
+            config=config,
+        )
     """
+    checkpointer = MemorySaver()
     graph = StateGraph(AgentState)
 
     graph.add_node("orchestrator", orchestrator_node)
     graph.add_node("company_pipeline", company_pipeline)
+    graph.add_node("hitl_gate", hitl_gate_node)
 
     graph.add_conditional_edges(
         "orchestrator",
@@ -217,7 +241,8 @@ def build_pipeline():
         ["company_pipeline"],
     )
 
-    graph.add_edge("company_pipeline", END)
+    graph.add_edge("company_pipeline", "hitl_gate")
+    graph.add_edge("hitl_gate", END)
     graph.set_entry_point("orchestrator")
 
-    return graph.compile()
+    return graph.compile(checkpointer=checkpointer)

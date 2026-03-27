@@ -217,17 +217,23 @@ async def run_draft(
         solution_areas=solution_areas,
     )
 
-    try:
-        llm = ChatAnthropic(model=llm_model, max_tokens=800, temperature=0.3)
-        response = await llm.ainvoke([
-            SystemMessage(content=system_prompt),
-            HumanMessage(content=user_prompt),
-        ])
-        parsed = _parse_draft_response(str(response.content))
-        cost_incurred = _LLM_COST
-    except Exception:
-        parsed = None
-        cost_incurred = 0.0
+    # Attempt LLM call with 1 retry (2 total attempts); DRAFT_QUALITY if both fail
+    parsed = None
+    cost_incurred = 0.0
+    for _attempt in range(2):
+        try:
+            llm = ChatAnthropic(model=llm_model, max_tokens=800, temperature=0.3)
+            response = await llm.ainvoke([
+                SystemMessage(content=system_prompt),
+                HumanMessage(content=user_prompt),
+            ])
+            attempt_parsed = _parse_draft_response(str(response.content))
+            cost_incurred += _LLM_COST
+            if attempt_parsed is not None:
+                parsed = attempt_parsed
+                break
+        except Exception:
+            break
 
     if parsed:
         draft = Draft(
@@ -241,12 +247,20 @@ async def run_draft(
             version=version,
         )
     else:
+        # Both attempts failed — flag for human review (spec §5.5 DRAFT_QUALITY)
+        cs = dict(cs)  # type: ignore[assignment]
+        cs["human_review_required"] = True  # type: ignore[index]
+        existing_reasons = list(cs.get("human_review_reasons", []))  # type: ignore[call-overload]
+        if HumanReviewReason.DRAFT_QUALITY not in existing_reasons:
+            existing_reasons.append(HumanReviewReason.DRAFT_QUALITY)
+        cs["human_review_reasons"] = existing_reasons  # type: ignore[index]
+
         draft = Draft(
             draft_id=str(uuid.uuid4()),
             company_id=cs["company_id"],
             persona_id=persona_id,
-            subject_line=f"[{company_name}] — draft parse failed",
-            body="Draft generation failed — LLM response could not be parsed.",
+            subject_line=f"[{company_name}] — draft generation failed",
+            body="Draft generation failed after 2 attempts — manual review required.",
             confidence_score=float(confidence_score),
             approved=False,
             version=version,
