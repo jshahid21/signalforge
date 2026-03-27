@@ -1,0 +1,104 @@
+Let me read the spec in sections.Now let me also check if there's an existing project structure to verify file path assumptions.Good. I now have a thorough understanding of both the spec and the plan. Here's my review:
+
+---
+
+## Plan Review: SignalForge — Proactive Sales Signal Intelligence Engine
+
+### 1. Spec Coverage
+
+**Covered well:**
+- All 8 agent types from spec §5 are addressed across phases 3–5 and 8
+- Data models (§4) fully covered in Phase 2
+- Signal tiering logic (§7) covered in Phase 3
+- Solution mapping with capability map generation (§8) in Phase 4
+- HITL persona selection gate (§5.7) in Phase 5
+- UI panels (§9.1–9.10) in Phase 7
+- Memory & feedback system (§12) in Phase 5
+- Cost strategy (§10) addressed across phases 3, 6
+- Error handling (§11) implicitly woven into agent phases
+- Testing strategy (§13) in Phase 8
+
+**Minor gaps:**
+- **Spec §10.3 — Cost Display**: The plan mentions budget warning at 80% via WebSocket (Phase 6) but doesn't explicitly call out the per-company cost tooltip in the Company Table or the session total in the header. These are small UI details that a builder could infer from the spec, but they're not in Phase 7's deliverables.
+- **Spec §9.9 — Capability Map tab in Settings**: The spec says Settings has a Capability Map review/edit UI (read-only table, add/delete entries). The plan's Phase 7 SettingsPanel lists 4 tabs (Seller Profile, API Keys, Session Budget, Memory Store) but omits the Capability Map tab. The capability map generation endpoint is in Phase 6 (`POST /settings/capability-map/generate`), but the UI to browse/edit the map is missing.
+- **Spec §8.1 — Capability map generation inputs**: The spec lists three input types (product list, product URL with crawling, territory). The plan's Phase 4 mentions `capability_map_generator.py` but doesn't detail these three input modes. A builder might only implement a single input type.
+- **Spec §5.6 — recommended_outreach_sequence**: This field appears in `CompanyState` and has explicit sequencing logic ("start with influencer or technical_buyer if signal is technical, then economic_buyer"). The plan doesn't mention this anywhere — neither in Phase 4 (persona generation) nor Phase 7 (UI). A builder would likely miss this.
+- **Spec §11.4 — Manual stage retry**: The spec says users can "manually retry a failed stage." The plan has `POST /sessions/{id}/companies/{cid}/retry` in Phase 6 but doesn't specify if this is a full-company retry or per-stage retry. The spec implies per-stage.
+
+### 2. Phase Breakdown & Sequencing
+
+**Strengths:**
+- Strictly linear dependency chain is clear and logical
+- Each phase builds on the previous one's deliverables
+- Phase sizes are reasonable — not too granular, not too monolithic
+- The decision to put pipeline agents (Phases 3–5) before the API layer (Phase 6) is correct: test agent logic in isolation first
+
+**Concerns:**
+- **Purely sequential dependency chain**: Phases 6 (API) and 7 (Frontend) have no dependency on each other's *implementation* — the API defines the contract and the frontend consumes it. In theory, frontend scaffolding with mock data could start earlier (parallel with Phase 6). However, for a single-builder scenario, the linear approach is pragmatic. Not a blocker.
+- **Phase 8 is overloaded**: It combines the Chat Assistant agent (a non-trivial LLM agent with streaming), 10 company fixtures, E2E tests, integration tests, AND an LLM eval harness. This is the most complex phase despite being framed as "final." If the chat agent is more complex than expected, the testing deliverables could slip. Consider whether chat agent could move to Phase 5 (alongside other agents) with the API endpoint added in Phase 6.
+
+### 3. Technical Approach
+
+**Sound decisions:**
+- TypedDict for LangGraph state (correct — LangGraph requires this)
+- Pydantic for API serialization (standard FastAPI pattern)
+- SQLite for both memory and session persistence (appropriate for local-first)
+- `asyncio.gather()` for parallel sub-tasks within agents
+- LangGraph `interrupt()` for HITL gate
+- Zustand for frontend state (lightweight, appropriate for this scope)
+- Abstracting LLM calls behind `backend/llm.py` (mentioned in risk table)
+
+**Questions:**
+- **LangGraph `Send()` + per-company `CompanyState` isolation**: The plan correctly identifies this as a risk. The approach of each company getting an isolated `CompanyState` copy is sound, but the plan should clarify how per-company states are **merged back** into `AgentState.company_states` after `Send()` fan-out completes. LangGraph's `Send()` returns results that need aggregation — the orchestrator must handle this. Phase 3 mentions the orchestrator but doesn't detail the aggregation/reduce step.
+- **Session resume via LangGraph checkpointing**: Phase 6 mentions "resume LangGraph from interrupt checkpoint" but doesn't specify which LangGraph checkpointer will be used (SQLite checkpointer? Memory checkpointer?). Since the app already uses SQLite, using `SqliteSaver` as the LangGraph checkpointer would be natural and should be called out.
+
+### 4. Testability
+
+**Strengths:**
+- Each phase has explicit acceptance criteria and test plans
+- Boundary value testing is called out (59/60/61 for confidence, 0.45 for qualification)
+- Mock LLM approach is mentioned for integration tests
+- HITL pause/resume testing is explicitly planned
+
+**Gaps:**
+- **No frontend tests beyond manual**: Phase 7's test plan says "Manual Testing: Full workspace flow with real backend" plus two unit tests. For a React app with this many interactive components (HITL checkboxes, inline editing, WebSocket-driven updates), there should be at least component-level tests using React Testing Library. The spec doesn't demand this, but the plan should acknowledge the risk.
+- **LLM eval harness (Phase 8)**: The plan lists `tests/eval/draft_eval.py` but doesn't detail how to run it — is it a pytest suite? Does it require real LLM calls or mock? The spec mentions "Human-labeled test set (20 companies)" for solution mapping accuracy — the plan doesn't address who creates these labels or when.
+
+### 5. Risk Assessment
+
+**Covered risks:**
+- LangGraph HITL complexity — correctly identified as M/H
+- LLM JSON parse failures — correctly identified with fallback strategy
+- State collision — correctly identified with mitigation
+- Tier 3 cost runaway — covered
+- WebSocket complexity — covered
+
+**Missing risks:**
+- **LangGraph version compatibility**: The plan targets "LangGraph 0.2+" but doesn't pin a version. LangGraph's API has changed significantly between versions (e.g., `interrupt()` API, `Send()` semantics). A builder could hit breaking changes.
+- **Streaming SSE for chat**: Phase 8 introduces SSE streaming for the chat endpoint. This is a different protocol from the WebSocket used for pipeline progress. Having both WebSocket AND SSE in the same app adds complexity — worth calling out.
+
+### 6. Additional Observations
+
+- **Spec §6.4 — Pipeline status transitions**: The plan doesn't explicitly map out how `PipelineStatus` transitions are tracked and emitted. This is important for the WebSocket events and UI progress indicators.
+- **The plan's success metrics are well-aligned** with spec §15, which is good.
+- **`backend/pipeline.py` appears in both Phase 3 and Phase 5** as a deliverable. Phase 3 creates it, Phase 5 updates it. This is fine but worth noting — the builder should know Phase 3's graph is incomplete.
+
+---
+
+## Summary
+
+This is a **solid, well-structured plan** that covers the vast majority of the spec. The phase sequencing is logical, the technical approach is sound, and the test plans are concrete. The issues I've identified are mostly minor gaps that wouldn't block a skilled builder, with two notable exceptions: (1) the missing Capability Map UI tab in Settings, and (2) the missing `recommended_outreach_sequence` implementation detail. Phase 8 is also slightly overloaded.
+
+---
+VERDICT: COMMENT
+SUMMARY: Solid plan with minor spec coverage gaps (Capability Map Settings tab, outreach sequence logic) and an overloaded final phase — all fixable without restructuring.
+CONFIDENCE: HIGH
+---
+
+KEY_ISSUES:
+- **Missing Capability Map tab in Settings UI (Phase 7)**: Spec §8.1/§9.9 requires a Settings tab to browse, add/delete entries in the capability map. Phase 7's SettingsPanel only lists 4 tabs, missing this one.
+- **`recommended_outreach_sequence` not addressed**: Spec §4 defines this field on `CompanyState` with explicit sequencing logic. No phase mentions implementing or displaying it.
+- **Phase 8 is overloaded**: Combines Chat Assistant agent + fixtures + E2E tests + integration tests + LLM eval harness. Consider moving Chat Assistant to an earlier phase.
+- **LangGraph `Send()` aggregation/reduce step not detailed**: Phase 3 mentions fan-out but not how per-company results merge back into `AgentState.company_states`.
+- **LangGraph checkpointer for session resume not specified**: Phase 6 mentions resume but doesn't specify which checkpointer (SqliteSaver recommended given existing SQLite usage).
+- **Capability map generation input modes underspecified**: Spec §8.1 lists 3 input types (product list, URL crawl, territory text). Plan doesn't detail these.

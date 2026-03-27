@@ -1,0 +1,5 @@
+CONSULT_ERROR: Codex consultation failed — PR is too large for Codex context window (21,983 additions).
+
+VERDICT: CONSULT_ERROR
+SUMMARY: Context window exceeded — PR too large for Codex.
+CONFIDENCE: N/A

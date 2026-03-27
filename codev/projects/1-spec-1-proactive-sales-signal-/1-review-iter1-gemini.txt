@@ -1,0 +1,5 @@
+CONSULT_ERROR: Gemini consultation failed with Node.js "Maximum call stack size exceeded" error in the consult CLI tool. This is a tool infrastructure failure, not a code review rejection.
+
+VERDICT: CONSULT_ERROR
+SUMMARY: Tool failure — Node.js stack overflow in gemini consult CLI.
+CONFIDENCE: N/A

@@ -1,0 +1,9 @@
+---
+VERDICT: COMMENT
+SUMMARY: Excellent plan with comprehensive spec coverage, but requires attention to a few LangGraph-specific concurrency and persistence details.
+CONFIDENCE: HIGH
+---
+KEY_ISSUES:
+- **LangGraph State Reducers (Phase 2):** Because you are using the `Send()` API to run per-company pipelines in parallel, any global fields in `AgentState` that are updated by these parallel branches (such as `total_cost_usd`, `completed_company_ids`, or `failed_company_ids`) must use reducers (e.g., `Annotated[float, operator.add]`). Without reducers, concurrent updates will overwrite each other.
+- **Session Persistence & HITL (Phase 6):** The plan mentions manually serializing `AgentState` to SQLite for session persistence. It is highly recommended to use LangGraph's native checkpointer (e.g., `AsyncSqliteSaver` from `langgraph.checkpoint.sqlite`) instead. The native checkpointer automatically handles state serialization and is intrinsically required for the `interrupt()` API (used in your HITL gate) to resume correctly.
+- **Budget Halting Execution:** Phase 8 tests that the "pipeline halts when total_cost_usd >= session_budget". Since LangGraph nodes run asynchronously, the API layer cannot easily kill the graph mid-execution. You will need to explicitly implement budget checks within the agents themselves (e.g., as a conditional edge before initiating Tier 3 ingestion or drafting) to gracefully skip operations when the cap is reached.
