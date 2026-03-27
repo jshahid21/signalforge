@@ -128,5 +128,5 @@ async def hitl_gate_node(state: AgentState) -> dict:
             "awaiting_persona_selection": False,
             "awaiting_review": [],
         },
-        send=sends,
+        goto=sends,
     )
