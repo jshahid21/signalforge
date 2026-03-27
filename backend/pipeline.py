@@ -206,7 +206,7 @@ async def company_pipeline(input: CompanyInput) -> dict:
     return _done(cs)
 
 
-def build_pipeline():
+def build_pipeline(checkpointer=None):
     """Assemble and compile the LangGraph StateGraph.
 
     Graph topology:
@@ -216,7 +216,11 @@ def build_pipeline():
     - Detects companies awaiting persona selection
     - Calls interrupt() to pause the graph for human input
     - On resume, applies selections and dispatches synthesis-only company_pipeline runs
-    - Requires a MemorySaver checkpointer to support interrupt/resume
+    - Requires a checkpointer to support interrupt/resume
+
+    Args:
+        checkpointer: LangGraph checkpointer. Defaults to MemorySaver if None.
+                     Pass AsyncSqliteSaver for persistent session storage.
 
     Usage with HITL:
         config = {"configurable": {"thread_id": "<unique-id>"}}
@@ -228,7 +232,8 @@ def build_pipeline():
             config=config,
         )
     """
-    checkpointer = MemorySaver()
+    if checkpointer is None:
+        checkpointer = MemorySaver()
     graph = StateGraph(AgentState)
 
     graph.add_node("orchestrator", orchestrator_node)
