@@ -11,6 +11,7 @@ interface Props {
   companyId: string
   onConfirmSelection: (selectedIds: string[], customPersonas: Persona[]) => Promise<void>
   onEditPersona: (personaId: string, updates: Partial<Pick<Persona, 'title' | 'targeting_reason'>>) => Promise<void>
+  onRemovePersona?: (personaId: string) => void
 }
 
 const ROLE_TYPE_LABELS: Record<string, string> = {
@@ -25,6 +26,7 @@ export function PersonaTable({
   isHitlMode,
   onConfirmSelection,
   onEditPersona,
+  onRemovePersona,
 }: Props) {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(
     new Set(personas.map(p => p.persona_id))
@@ -39,6 +41,11 @@ export function PersonaTable({
   const [confirming, setConfirming] = useState(false)
 
   const allPersonas = [...personas, ...customPersonas]
+
+  function removeCustomPersona(id: string) {
+    setCustomPersonas(prev => prev.filter(p => p.persona_id !== id))
+    setSelectedIds(prev => { const s = new Set(prev); s.delete(id); return s })
+  }
 
   function toggleSelect(id: string) {
     setSelectedIds(prev => {
@@ -171,22 +178,41 @@ export function PersonaTable({
                 {Math.round(persona.priority_score * 100)}%
               </td>
               <td className="py-2 text-right">
-                {editingId === persona.persona_id ? (
-                  <button
-                    onClick={() => saveEdit(persona.persona_id)}
-                    className="text-xs text-blue-600 hover:underline"
-                  >
-                    Save
-                  </button>
-                ) : (
-                  <button
-                    onClick={() => startEdit(persona)}
-                    className="text-xs text-gray-400 hover:text-gray-600"
-                    aria-label={`Edit ${persona.title}`}
-                  >
-                    Edit
-                  </button>
-                )}
+                <div className="flex justify-end gap-2">
+                  {editingId === persona.persona_id ? (
+                    <button
+                      onClick={() => saveEdit(persona.persona_id)}
+                      className="text-xs text-blue-600 hover:underline"
+                    >
+                      Save
+                    </button>
+                  ) : (
+                    <button
+                      onClick={() => startEdit(persona)}
+                      className="text-xs text-gray-400 hover:text-gray-600"
+                      aria-label={`Edit ${persona.title}`}
+                    >
+                      Edit
+                    </button>
+                  )}
+                  {persona.is_custom ? (
+                    <button
+                      onClick={() => removeCustomPersona(persona.persona_id)}
+                      className="text-xs text-red-400 hover:text-red-600"
+                      aria-label={`Remove ${persona.title}`}
+                    >
+                      ✕
+                    </button>
+                  ) : onRemovePersona ? (
+                    <button
+                      onClick={() => onRemovePersona(persona.persona_id)}
+                      className="text-xs text-red-400 hover:text-red-600"
+                      aria-label={`Remove ${persona.title}`}
+                    >
+                      ✕
+                    </button>
+                  ) : null}
+                </div>
               </td>
             </tr>
           ))}

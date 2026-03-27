@@ -2,6 +2,7 @@
  * Settings panel — tabs: Seller Profile, API Keys, Session Budget, Memory Store, Capability Map.
  */
 import { useEffect, useState } from 'react'
+import type { CapabilityMapEntry } from '../api/client'
 import { memoryApi, settingsApi } from '../api/client'
 
 type Tab = 'seller-profile' | 'api-keys' | 'session-budget' | 'memory' | 'capability-map'
@@ -73,6 +74,14 @@ function ApiKeysTab() {
   const [llmProvider, setLlmProvider] = useState('')
   const [llmModel, setLlmModel] = useState('')
   const [saved, setSaved] = useState(false)
+
+  useEffect(() => {
+    settingsApi.getApiKeys().then((d) => {
+      // Keys are masked by backend (e.g. "***4321"); show as-is for provider/model
+      setLlmProvider(d.llm_provider as string ?? '')
+      setLlmModel(d.llm_model as string ?? '')
+    }).catch(() => {})
+  }, [])
 
   async function save() {
     await settingsApi.putApiKeys({ jsearch, tavily, llm_provider: llmProvider, llm_model: llmModel })
@@ -189,26 +198,47 @@ function MemoryTab() {
 // ── Capability Map Tab ─────────────────────────────────────────────────────
 
 function CapabilityMapTab() {
-  const [entries, setEntries] = useState<Array<Record<string, unknown>>>([])
+  const [entries, setEntries] = useState<CapabilityMapEntry[]>([])
   const [generating, setGenerating] = useState(false)
   const [genInput, setGenInput] = useState('')
   const [genMode, setGenMode] = useState<'product_list' | 'product_url' | 'territory_text'>('product_list')
+  const [addingEntry, setAddingEntry] = useState(false)
+  const [newId, setNewId] = useState('')
+  const [newLabel, setNewLabel] = useState('')
+  const [newSignals, setNewSignals] = useState('')
 
   useEffect(() => {
-    settingsApi.getCapabilityMap().then((d: Array<Record<string, unknown>>) => {
-      if (Array.isArray(d)) setEntries(d)
-    }).catch(() => {})
+    settingsApi.getCapabilityMap().then(setEntries).catch(() => {})
   }, [])
 
   async function regenerate() {
     setGenerating(true)
     try {
       await settingsApi.generateCapabilityMap({ [genMode]: genInput })
-      const d: Array<Record<string, unknown>> = await settingsApi.getCapabilityMap()
-      if (Array.isArray(d)) setEntries(d)
+      const d = await settingsApi.getCapabilityMap()
+      setEntries(d)
     } finally {
       setGenerating(false)
     }
+  }
+
+  async function addEntry() {
+    if (!newId.trim() || !newLabel.trim()) return
+    const entry: CapabilityMapEntry = {
+      id: newId.trim(),
+      label: newLabel.trim(),
+      problem_signals: newSignals.split('\n').map(s => s.trim()).filter(Boolean),
+      solution_areas: [],
+    }
+    await settingsApi.addCapabilityMapEntry(entry)
+    setEntries(prev => [...prev, entry])
+    setNewId(''); setNewLabel(''); setNewSignals('')
+    setAddingEntry(false)
+  }
+
+  async function deleteEntry(id: string) {
+    await settingsApi.deleteCapabilityMapEntry(id)
+    setEntries(prev => prev.filter(e => e.id !== id))
   }
 
   return (
@@ -232,6 +262,7 @@ function CapabilityMapTab() {
         </button>
       </div>
 
+      {/* Entry list */}
       {entries.length > 0 && (
         <div className="border border-gray-200 rounded-md overflow-hidden">
           <table className="w-full text-sm">
@@ -239,20 +270,49 @@ function CapabilityMapTab() {
               <tr>
                 <th className="px-3 py-2 text-left text-xs font-medium text-gray-500">Category</th>
                 <th className="px-3 py-2 text-left text-xs font-medium text-gray-500">Problem Signals</th>
+                <th className="px-3 py-2 w-16" />
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
-              {entries.map((e, i) => (
-                <tr key={i}>
-                  <td className="px-3 py-2 font-medium">{String(e.category ?? '')}</td>
-                  <td className="px-3 py-2 text-gray-600 text-xs">
-                    {(e.problem_signals as string[] ?? []).join(', ')}
+              {entries.map(e => (
+                <tr key={e.id}>
+                  <td className="px-3 py-2 font-medium">{e.label}</td>
+                  <td className="px-3 py-2 text-gray-600 text-xs">{e.problem_signals.join(', ')}</td>
+                  <td className="px-3 py-2 text-right">
+                    <button onClick={() => void deleteEntry(e.id)}
+                      className="text-xs text-red-500 hover:underline" aria-label={`Delete ${e.label}`}>
+                      Delete
+                    </button>
                   </td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
+      )}
+
+      {/* Add entry */}
+      {addingEntry ? (
+        <div className="rounded-md border border-gray-200 p-3 space-y-2">
+          <input value={newId} onChange={e => setNewId(e.target.value)} placeholder="ID (e.g. cost-management)"
+            className="w-full rounded border border-gray-300 px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500" />
+          <input value={newLabel} onChange={e => setNewLabel(e.target.value)} placeholder="Label (e.g. Cost Management)"
+            className="w-full rounded border border-gray-300 px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500" />
+          <textarea value={newSignals} onChange={e => setNewSignals(e.target.value)} rows={3}
+            placeholder="Problem signals (one per line)"
+            className="w-full rounded border border-gray-300 px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500" />
+          <div className="flex gap-2">
+            <button onClick={() => void addEntry()} disabled={!newId.trim() || !newLabel.trim()}
+              className="px-3 py-1 text-sm bg-gray-800 text-white rounded hover:bg-gray-700 disabled:opacity-50">
+              Add
+            </button>
+            <button onClick={() => setAddingEntry(false)} className="px-3 py-1 text-sm text-gray-600 hover:text-gray-800">Cancel</button>
+          </div>
+        </div>
+      ) : (
+        <button onClick={() => setAddingEntry(true)} className="text-sm text-blue-600 hover:underline">
+          + Add entry
+        </button>
       )}
     </div>
   )

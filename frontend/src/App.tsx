@@ -4,7 +4,7 @@
  * Layout: company table (left 1/3) + insights/persona/draft panels (right 2/3) + chat (bottom)
  * Session rehydration: on mount, fetch most recent active/awaiting session and restore state.
  */
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { draftsApi, personasApi, sessionsApi, setupApi, wsManager } from './api/client'
 import type { CompanyState, Session } from './api/client'
 import { ChatAssistant } from './components/ChatAssistant'
@@ -133,9 +133,15 @@ export default function App() {
   }, [])
 
   // ── WebSocket ──────────────────────────────────────────────────────────
+  // Track unsubscribe callback to avoid handler accumulation across session switches
+  const wsUnsubRef = useRef<(() => void) | null>(null)
+
   function connectWebSocket(sessionId: string) {
+    // Unsubscribe previous handler before connecting to new session
+    wsUnsubRef.current?.()
     wsManager.connect(sessionId)
-    wsManager.onEvent(event => {
+
+    const unsub = wsManager.onEvent(event => {
       if (event.type === 'stage_update') {
         updateCompanyState(event.company_id, {
           current_stage: event.stage,
@@ -146,14 +152,13 @@ export default function App() {
         setTimeout(() => setToast(null), 6000)
       } else if (event.type === 'pipeline_complete' || event.type === 'hitl_required') {
         // Refresh full session state
-        if (currentSession) {
-          sessionsApi.get(currentSession.session_id).then(setCurrentSession).catch(() => {})
-        }
+        sessionsApi.get(sessionId).then(setCurrentSession).catch(() => {})
       } else if (event.type === 'error') {
         setToast(`Error: ${event.message}`)
         setTimeout(() => setToast(null), 8000)
       }
     })
+    wsUnsubRef.current = unsub
   }
 
   async function startSession(companyNames: string[]) {
@@ -220,11 +225,20 @@ export default function App() {
     setCurrentSession(updated)
   }
 
-  async function handleRegenerateDraft() {
+  async function handleRegenerateDraft(opts?: { override_requested?: boolean; override_reason?: string }) {
     if (!currentSession || !selectedCompanyId || !selectedPersona) return
-    await draftsApi.regenerate(currentSession.session_id, selectedCompanyId, selectedPersona.persona_id)
+    await draftsApi.regenerate(currentSession.session_id, selectedCompanyId, selectedPersona.persona_id, opts)
     const updated = await sessionsApi.get(currentSession.session_id)
     setCurrentSession(updated)
+  }
+
+  const [overrideDialogOpen, setOverrideDialogOpen] = useState(false)
+  const [overrideReason, setOverrideReason] = useState('')
+
+  async function handleOverride() {
+    setOverrideDialogOpen(false)
+    await handleRegenerateDraft({ override_requested: true, override_reason: overrideReason || undefined })
+    setOverrideReason('')
   }
 
   // ── All-companies-skipped state ────────────────────────────────────────
@@ -307,7 +321,7 @@ export default function App() {
                       <div className="px-4 pt-3 pb-1 text-xs font-semibold uppercase text-gray-500">
                         Insights — {selectedCompany.company_name}
                       </div>
-                      <InsightsPanel company={selectedCompany} />
+                      <InsightsPanel company={selectedCompany} selectedPersona={selectedPersona} />
                     </div>
 
                     {/* Personas */}
@@ -323,6 +337,24 @@ export default function App() {
                           companyId={selectedCompanyId ?? ''}
                           onConfirmSelection={handleConfirmPersonas}
                           onEditPersona={handleEditPersona}
+                          onRemovePersona={id => {
+                            // Remove persona from local view (non-HITL removal)
+                            if (selectedCompanyId && currentSession?.company_states) {
+                              const cs = currentSession.company_states[selectedCompanyId]
+                              if (cs) {
+                                setCurrentSession({
+                                  ...currentSession,
+                                  company_states: {
+                                    ...currentSession.company_states,
+                                    [selectedCompanyId]: {
+                                      ...cs,
+                                      generated_personas: cs.generated_personas.filter(p => p.persona_id !== id),
+                                    },
+                                  },
+                                })
+                              }
+                            }
+                          }}
                         />
                       </div>
                     </div>
@@ -358,6 +390,7 @@ export default function App() {
                         humanReviewRequired={synthesis?.human_review_required}
                         onApprove={handleApproveDraft}
                         onRegenerate={handleRegenerateDraft}
+                        onOverride={() => setOverrideDialogOpen(true)}
                       />
                     </div>
                   </div>
@@ -388,6 +421,35 @@ export default function App() {
       )}
 
       {showSettings && <SettingsPanel onClose={() => setShowSettings(false)} />}
+
+      {/* Override dialog */}
+      {overrideDialogOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+          <div className="bg-white rounded-xl shadow-xl w-full max-w-sm p-6 space-y-4">
+            <h2 className="text-base font-semibold text-gray-900">Override & Generate Draft</h2>
+            <p className="text-sm text-gray-600">
+              This will generate a draft despite the low-confidence signal. You can optionally provide a reason.
+            </p>
+            <textarea
+              value={overrideReason}
+              onChange={e => setOverrideReason(e.target.value)}
+              placeholder="Override reason (optional)"
+              rows={3}
+              className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+            <div className="flex gap-2">
+              <button onClick={() => setOverrideDialogOpen(false)}
+                className="flex-1 rounded-md border border-gray-300 px-4 py-2 text-sm text-gray-600 hover:bg-gray-50">
+                Cancel
+              </button>
+              <button onClick={() => void handleOverride()}
+                className="flex-1 rounded-md bg-yellow-500 px-4 py-2 text-sm font-medium text-white hover:bg-yellow-600">
+                Override & Generate
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

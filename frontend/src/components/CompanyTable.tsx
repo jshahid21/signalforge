@@ -92,12 +92,25 @@ interface Props {
   onSelectCompany: (id: string) => void
 }
 
+const STATUS_FILTER_OPTIONS: Array<{ value: string; label: string }> = [
+  { value: '', label: 'All' },
+  { value: 'running', label: 'Running' },
+  { value: 'awaiting_human', label: 'Awaiting' },
+  { value: 'completed', label: 'Done' },
+  { value: 'failed', label: 'Failed' },
+  { value: 'skipped', label: 'Skipped' },
+  { value: 'pending', label: 'Pending' },
+]
+
 export function CompanyTable({ companies, selectedCompanyId, onSelectCompany }: Props) {
   const [filter, setFilter] = useState('')
+  const [statusFilter, setStatusFilter] = useState('')
 
-  const filtered = companies.filter(c =>
-    c.company_name.toLowerCase().includes(filter.toLowerCase())
-  )
+  const filtered = companies.filter(c => {
+    const nameMatch = c.company_name.toLowerCase().includes(filter.toLowerCase())
+    const statusMatch = !statusFilter || c.status === statusFilter
+    return nameMatch && statusMatch
+  })
 
   if (companies.length === 0) {
     return (
@@ -109,7 +122,7 @@ export function CompanyTable({ companies, selectedCompanyId, onSelectCompany }: 
 
   return (
     <div className="flex flex-col h-full">
-      <div className="p-3 border-b border-gray-200">
+      <div className="p-3 border-b border-gray-200 space-y-2">
         <input
           type="text"
           placeholder="Filter companies…"
@@ -118,6 +131,16 @@ export function CompanyTable({ companies, selectedCompanyId, onSelectCompany }: 
           className="w-full rounded-md border border-gray-300 px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
           aria-label="Filter companies"
         />
+        <select
+          value={statusFilter}
+          onChange={e => setStatusFilter(e.target.value)}
+          className="w-full rounded-md border border-gray-300 px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+          aria-label="Filter by status"
+        >
+          {STATUS_FILTER_OPTIONS.map(opt => (
+            <option key={opt.value} value={opt.value}>{opt.label}</option>
+          ))}
+        </select>
       </div>
       <div className="overflow-y-auto flex-1">
         <table className="w-full text-sm">

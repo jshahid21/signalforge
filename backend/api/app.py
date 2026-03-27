@@ -1,7 +1,8 @@
 """FastAPI application — routes, WebSocket, and middleware."""
 from __future__ import annotations
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from pydantic import ValidationError
 
 from backend.api.routes import (
     chat,
@@ -49,7 +50,10 @@ async def update_config(data: dict) -> dict[str, str]:
     """Persist updated config from Setup Wizard."""
     from backend.config.loader import SignalForgeConfig
 
-    config = SignalForgeConfig.model_validate(data)
+    try:
+        config = SignalForgeConfig.model_validate(data)
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail=exc.errors())
     save_config(config)
     return {"status": "saved"}
 

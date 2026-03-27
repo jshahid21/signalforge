@@ -60,9 +60,17 @@ export interface QualifiedSignal {
 export interface SynthesisOutput {
   core_problem: string
   solution_areas: string[]
+  technical_context?: string
   confidence_score: number
   human_review_required: boolean
   human_review_reason?: HumanReviewReason
+}
+
+export interface CapabilityMapEntry {
+  id: string
+  label: string
+  problem_signals: string[]
+  solution_areas: string[]
 }
 
 export interface CompanyState {
@@ -114,18 +122,20 @@ export const personasApi = {
 export const draftsApi = {
   approve: (sessionId: string, companyId: string, personaId: string) =>
     api.post(`/sessions/${sessionId}/companies/${companyId}/drafts/${personaId}/approve`).then(r => r.data),
-  regenerate: (sessionId: string, companyId: string, personaId: string) =>
-    api.post(`/sessions/${sessionId}/companies/${companyId}/drafts/${personaId}/regenerate`).then(r => r.data),
+  regenerate: (sessionId: string, companyId: string, personaId: string, opts?: { override_requested?: boolean; override_reason?: string }) =>
+    api.post(`/sessions/${sessionId}/companies/${companyId}/drafts/${personaId}/regenerate`, opts ?? {}).then(r => r.data),
 }
 
 export const settingsApi = {
   getSellerProfile: () => api.get('/settings/seller-profile').then(r => r.data),
   putSellerProfile: (data: Record<string, unknown>) => api.put('/settings/seller-profile', data).then(r => r.data),
-  getApiKeys: () => api.get('/settings/api-keys').then(r => r.data),
+  getApiKeys: () => api.get<Record<string, unknown>>('/settings/api-keys').then(r => r.data),
   putApiKeys: (data: Record<string, unknown>) => api.put('/settings/api-keys', data).then(r => r.data),
   getSessionBudget: () => api.get('/settings/session-budget').then(r => r.data),
   putSessionBudget: (data: Record<string, unknown>) => api.put('/settings/session-budget', data).then(r => r.data),
-  getCapabilityMap: () => api.get('/settings/capability-map').then(r => r.data),
+  getCapabilityMap: () => api.get<CapabilityMapEntry[]>('/settings/capability-map').then(r => r.data),
+  addCapabilityMapEntry: (entry: CapabilityMapEntry) => api.post<CapabilityMapEntry>('/settings/capability-map/entries', entry).then(r => r.data),
+  deleteCapabilityMapEntry: (id: string) => api.delete(`/settings/capability-map/entries/${id}`).then(r => r.data),
   generateCapabilityMap: (data: Record<string, unknown>) => api.post('/settings/capability-map/generate', data).then(r => r.data),
 }
 

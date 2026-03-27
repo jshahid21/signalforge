@@ -120,6 +120,73 @@ class CapabilityMapRequest(BaseModel):
     territory_text: Optional[str] = None
 
 
+class CapabilityMapEntryBody(BaseModel):
+    id: str
+    label: str
+    problem_signals: list[str] = []
+    solution_areas: list[str] = []
+
+
+@router.get("/capability-map")
+async def get_capability_map() -> list[dict]:
+    """Return the current capability map entries."""
+    from backend.config.capability_map import load_capability_map
+
+    cap_map = load_capability_map()
+    if cap_map is None:
+        return []
+    return [e.as_dict() for e in cap_map.entries]
+
+
+@router.post("/capability-map/entries", status_code=201)
+async def add_capability_map_entry(body: CapabilityMapEntryBody) -> dict:
+    """Add a new entry to the capability map."""
+    from backend.config.capability_map import (
+        CapabilityMap,
+        CapabilityMapEntry,
+        load_capability_map,
+        save_capability_map,
+    )
+
+    cap_map = load_capability_map()
+    entries = list(cap_map.entries) if cap_map else []
+
+    if any(e.id == body.id for e in entries):
+        raise HTTPException(status_code=409, detail=f"Entry with id '{body.id}' already exists")
+
+    new_entry = CapabilityMapEntry({
+        "id": body.id,
+        "label": body.label,
+        "problem_signals": body.problem_signals,
+        "solution_areas": body.solution_areas,
+    })
+    entries.append(new_entry)
+    version = cap_map.version if cap_map else "1.0"
+    save_capability_map(CapabilityMap(entries, version=version))
+    return new_entry.as_dict()
+
+
+@router.delete("/capability-map/entries/{entry_id}", status_code=200)
+async def delete_capability_map_entry(entry_id: str) -> dict:
+    """Delete an entry from the capability map by id."""
+    from backend.config.capability_map import (
+        CapabilityMap,
+        load_capability_map,
+        save_capability_map,
+    )
+
+    cap_map = load_capability_map()
+    if cap_map is None:
+        raise HTTPException(status_code=404, detail="Capability map not found")
+
+    entries = [e for e in cap_map.entries if e.id != entry_id]
+    if len(entries) == len(cap_map.entries):
+        raise HTTPException(status_code=404, detail=f"Entry '{entry_id}' not found")
+
+    save_capability_map(CapabilityMap(entries, version=cap_map.version))
+    return {"status": "deleted", "id": entry_id}
+
+
 @router.post("/capability-map/generate", status_code=202)
 async def generate_capability_map(body: CapabilityMapRequest) -> dict:
     """Generate and save a capability map from seller profile inputs.

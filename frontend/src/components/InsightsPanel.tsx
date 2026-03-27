@@ -1,17 +1,21 @@
 /**
  * Insights panel — signal summary, core pain point, solution areas, confidence badge.
+ * Scoped to the selected persona when provided.
  */
-import type { CompanyState } from '../api/client'
+import type { CompanyState, Persona } from '../api/client'
 import { HumanReviewBadge } from './HumanReviewBadge'
 
 interface Props {
   company: CompanyState
+  selectedPersona?: Persona | null
 }
 
-export function InsightsPanel({ company }: Props) {
+export function InsightsPanel({ company, selectedPersona }: Props) {
   const { qualified_signal: signal, synthesis_outputs } = company
-  // Use the first synthesis output for insights (or aggregate if multiple)
-  const synthesis = Object.values(synthesis_outputs ?? {})[0]
+  // Scope to selected persona's synthesis output; fall back to first available
+  const synthesis = selectedPersona
+    ? (synthesis_outputs?.[selectedPersona.persona_id] ?? Object.values(synthesis_outputs ?? {})[0])
+    : Object.values(synthesis_outputs ?? {})[0]
 
   if (!signal && !synthesis) {
     return (
@@ -80,6 +84,12 @@ export function InsightsPanel({ company }: Props) {
               ))}
             </div>
           </div>
+          {synthesis.technical_context && (
+            <div>
+              <h3 className="text-xs font-semibold uppercase text-gray-500 mb-1">Technical Context</h3>
+              <p className="text-sm text-gray-700">{synthesis.technical_context}</p>
+            </div>
+          )}
           {synthesis.human_review_required && (
             <HumanReviewBadge reason={synthesis.human_review_reason} />
           )}
