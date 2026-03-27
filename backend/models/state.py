@@ -201,3 +201,24 @@ class AgentState(TypedDict):
 
     # Final output
     final_drafts: Annotated[List[Draft], operator.concat]
+
+
+# ---------------------------------------------------------------------------
+# Per-company pipeline input (passed via Send() from orchestrator)
+# ---------------------------------------------------------------------------
+
+
+class CompanyInput(TypedDict):
+    """Payload dispatched by orchestrator via Send("company_pipeline", ...).
+
+    Bundles per-company state with global context needed by company agents.
+    """
+    company_state: CompanyState
+    seller_profile: SellerProfile
+    max_budget_usd: float
+    total_cost_usd_at_dispatch: float   # Snapshot of global cost at dispatch time
+    capability_map: Optional[object]    # backend.config.capability_map.CapabilityMap
+    jsearch_api_key: str
+    tavily_api_key: str
+    llm_provider: str
+    llm_model: str
