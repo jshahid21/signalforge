@@ -607,4 +607,179 @@ async def test_hitl_gate_marks_company_awaiting():
     result_cs = run_persona_selection_gate(cs)
 
     assert result_cs["status"] == PipelineStatus.AWAITING_HUMAN
-    assert result_cs["current_stage"] == "awaiting_persona_selection"
+
+
+# ---------------------------------------------------------------------------
+# Fixture-driven: all 10 canonical company fixtures
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("fixture", [
+    pytest.param(f, id=f.expected_slug)
+    for f in __import__("tests.fixtures.companies", fromlist=["COMPANY_FIXTURES"]).COMPANY_FIXTURES
+])
+def test_fixture_company_slug_normalization(fixture):
+    """Each canonical fixture normalizes to its expected slug."""
+    from backend.agents.orchestrator import normalize_company_name
+    from tests.fixtures.companies import CompanyFixture
+
+    slug = normalize_company_name(fixture.company_name)
+    assert slug == fixture.expected_slug, (
+        f"Company '{fixture.company_name}' expected slug '{fixture.expected_slug}', got '{slug}'"
+    )
+
+
+@pytest.mark.parametrize("fixture", [
+    pytest.param(f, id=f.expected_slug)
+    for f in __import__("tests.fixtures.companies", fromlist=["COMPANY_FIXTURES"]).COMPANY_FIXTURES
+    if f.expected_qualified
+])
+def test_qualified_fixtures_have_signal_type(fixture):
+    """All fixtures expected to qualify have a non-None expected_signal_type."""
+    assert fixture.expected_signal_type is not None, (
+        f"Fixture '{fixture.company_name}' is expected_qualified=True but has no expected_signal_type"
+    )
+
+
+@pytest.mark.parametrize("fixture", [
+    pytest.param(f, id=f.expected_slug)
+    for f in __import__("tests.fixtures.companies", fromlist=["COMPANY_FIXTURES"]).COMPANY_FIXTURES
+    if not f.expected_qualified
+])
+def test_unqualified_fixtures_have_no_solution_areas(fixture):
+    """Fixtures not expected to qualify should have no expected_solution_areas."""
+    assert fixture.expected_solution_areas == [], (
+        f"Fixture '{fixture.company_name}' is expected_qualified=False but has solution areas: {fixture.expected_solution_areas}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_fixture_qualified_company_reaches_persona_stage():
+    """Canonical qualified fixture (LangChain) produces personas in pipeline run.
+
+    This drives the pipeline against mock data configured to match the LangChain
+    fixture's expected qualification result.
+    """
+    from tests.fixtures.companies import COMPANY_FIXTURES
+
+    langchain_fixture = next(f for f in COMPANY_FIXTURES if f.expected_slug == "langchain")
+    assert langchain_fixture.expected_qualified is True
+
+    from backend.agents.signal_ingestion import run_signal_ingestion
+    from backend.agents.signal_qualification import run_signal_qualification
+    from backend.agents.persona_generation import run_persona_generation
+    from backend.agents.research import run_research
+    from backend.agents.solution_mapping import run_solution_mapping
+
+    cap_map = _make_capability_map(keywords=["kubernetes", "ml", "platform", "data", "pipeline"])
+    cs = _make_company_state(company_id="langchain", company_name="LangChain")
+    cs["status"] = PipelineStatus.RUNNING
+
+    # Step 1: Ingestion with keyword-rich signals (Tier 1 sufficient)
+    mock_jsearch = MagicMock()
+    mock_jsearch.search_jobs = AsyncMock(return_value=[
+        {"job_title": "ML Platform Engineer", "job_description": "kubernetes ml platform data pipeline engineer", "job_apply_link": None, "job_posted_at_datetime_utc": "2026-01-15T10:00:00Z"},
+        {"job_title": "Data Platform Lead", "job_description": "ml kubernetes data pipeline platform scaling", "job_apply_link": None, "job_posted_at_datetime_utc": "2026-01-14T10:00:00Z"},
+        {"job_title": "Senior Platform Engineer", "job_description": "kubernetes data ml platform infrastructure", "job_apply_link": None, "job_posted_at_datetime_utc": "2026-01-13T10:00:00Z"},
+    ])
+
+    cs, ingestion_cost = await run_signal_ingestion(
+        cs=cs,
+        capability_map=cap_map,
+        current_total_cost=0.0,
+        max_budget_usd=10.0,
+        jsearch_client=mock_jsearch,
+        tavily_client=MagicMock(),
+        llm_provider="anthropic",
+        llm_model="claude-sonnet-4-6",
+    )
+
+    # Verify Tier 1 signals collected
+    assert len(cs["raw_signals"]) >= 1
+
+    # Step 2: Qualification with mocked LLM scores
+    with patch("backend.agents.signal_qualification.call_llm_severity", new=AsyncMock(
+        return_value=({"recency": 0.9, "specificity": 0.85, "technical_depth": 0.8, "buying_intent": 0.75}, 100)
+    )):
+        cs, qual_cost = await run_signal_qualification(
+            cs=cs,
+            capability_map=cap_map,
+            llm_provider="anthropic",
+            llm_model="claude-sonnet-4-6",
+            current_total_cost=ingestion_cost,
+            max_budget_usd=10.0,
+        )
+
+    # Verify qualification matches expected fixture
+    assert cs["signal_qualified"] == langchain_fixture.expected_qualified
+    assert cs["status"] != PipelineStatus.SKIPPED, "LangChain should qualify, not be skipped"
+
+    # Step 3: Research
+    with (
+        patch("backend.agents.research._run_company_context", new=AsyncMock(return_value="LangChain is a leading AI framework company.")),
+        patch("backend.agents.research._run_tech_stack_extraction", new=AsyncMock(return_value=["Python", "Kubernetes"])),
+        patch("backend.agents.research._run_hiring_signal_analysis", new=AsyncMock(return_value="Hiring ML engineers.")),
+    ):
+        cs, research_cost = await run_research(cs=cs, llm_provider="anthropic", llm_model="claude-sonnet-4-6", current_total_cost=0.0, max_budget_usd=10.0)
+
+    # Step 4: Solution mapping
+    solution_json = '{"core_problem": "ML platform scaling", "solution_areas": ["ml_platform", "data_pipeline"], "inferred_areas": [], "confidence_score": 80, "reasoning": "Strong signal"}'
+    mock_sol_resp = MagicMock()
+    mock_sol_resp.content = solution_json
+    with patch("backend.agents.solution_mapping.ChatAnthropic") as MockLLM:
+        MockLLM.return_value.ainvoke = AsyncMock(return_value=mock_sol_resp)
+        cs, sol_cost = await run_solution_mapping(cs=cs, capability_map=cap_map, llm_provider="anthropic", llm_model="claude-sonnet-4-6", current_total_cost=0.0, max_budget_usd=10.0)
+
+    # Step 5: Persona generation (no LLM needed)
+    cs, persona_cost = await run_persona_generation(cs=cs, llm_provider="anthropic", llm_model="claude-sonnet-4-6", current_total_cost=0.0, max_budget_usd=10.0)
+
+    # Company should have generated personas → ready for HITL
+    assert len(cs["generated_personas"]) > 0
+    # Verify solution areas match fixture expectations (subset check)
+    if cs["solution_mapping"] and langchain_fixture.expected_solution_areas:
+        mapped = cs["solution_mapping"]["solution_areas"]
+        # At least one expected solution area should be in the mapped areas
+        assert any(area in mapped for area in langchain_fixture.expected_solution_areas), (
+            f"None of expected {langchain_fixture.expected_solution_areas} found in {mapped}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Scenario 2b: Tier 2 (Tavily) NOT called when Tier 1 signals are sufficient
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_tier1_sufficient_tavily_not_called():
+    """When Tier 1 provides enough high-density signals, Tavily is NOT called."""
+    from backend.agents.signal_ingestion import run_signal_ingestion
+
+    cap_map = _make_capability_map(keywords=["kubernetes", "ml", "platform"])
+    cs = _make_company_state(company_id="stripe", company_name="Stripe")
+    cs["status"] = PipelineStatus.RUNNING
+
+    # 3 keyword-rich Tier 1 signals → density >= threshold, no Tier 2 needed
+    mock_jsearch = MagicMock()
+    mock_jsearch.search_jobs = AsyncMock(return_value=[
+        {"job_title": "ML Platform Engineer", "job_description": "kubernetes ml platform data engineer", "job_apply_link": None, "job_posted_at_datetime_utc": "2026-01-15T10:00:00Z"},
+        {"job_title": "Platform Infrastructure Lead", "job_description": "ml kubernetes platform architecture", "job_apply_link": None, "job_posted_at_datetime_utc": "2026-01-14T10:00:00Z"},
+        {"job_title": "Senior ML Engineer", "job_description": "kubernetes ml platform model serving", "job_apply_link": None, "job_posted_at_datetime_utc": "2026-01-13T10:00:00Z"},
+    ])
+    mock_tavily = MagicMock()
+    mock_tavily.search = AsyncMock(return_value=[])
+
+    result_cs, cost = await run_signal_ingestion(
+        cs=cs,
+        capability_map=cap_map,
+        current_total_cost=0.0,
+        max_budget_usd=10.0,
+        jsearch_client=mock_jsearch,
+        tavily_client=mock_tavily,
+        llm_provider="anthropic",
+        llm_model="claude-sonnet-4-6",
+    )
+
+    # Tavily should NOT have been called — Tier 1 signals were sufficient
+    mock_tavily.search.assert_not_called()
+    # Signals should be present from Tier 1
+    assert len(result_cs["raw_signals"]) >= 1

@@ -234,13 +234,12 @@ async def test_full_pipeline_run_langchain_fixture():
     assert "langchain" in result["company_states"]
     cs = result["company_states"]["langchain"]
 
-    # Company should be in a terminal or awaiting state
-    assert cs["status"] in (
-        PipelineStatus.COMPLETED,
-        PipelineStatus.AWAITING_HUMAN,
-        PipelineStatus.SKIPPED,
-        PipelineStatus.FAILED,
+    # LangChain is a qualified fixture — must NOT be SKIPPED or FAILED at first run.
+    # Expected: paused at AWAITING_HUMAN (HITL) since personas need selection.
+    assert cs["status"] not in (PipelineStatus.SKIPPED, PipelineStatus.FAILED), (
+        f"LangChain should qualify and pause for HITL, not {cs['status']}"
     )
+    assert cs["status"] in (PipelineStatus.AWAITING_HUMAN, PipelineStatus.COMPLETED)
 
 
 @pytest.mark.asyncio
@@ -392,25 +391,24 @@ async def test_hitl_pause_and_resume():
 async def test_memory_injection_passes_few_shot_examples():
     """Prior approved drafts are injected as few-shot examples into draft generation.
 
-    Verifies that get_few_shot_examples is called and its return value is
-    passed to run_drafts_for_company.
+    Verifies that when get_few_shot_examples returns approved drafts, they are
+    passed into run_drafts_for_company as few_shot_examples.
     """
     from backend.agents.draft import run_drafts_for_company
-    from backend.models.state import Draft
+    from backend.models.state import Draft, SolutionMappingOutput, SynthesisOutput
+    from tests.test_integration import _make_company_state
 
-    # Simulate approved drafts in memory
-    approved_drafts = [
-        Draft(
-            draft_id="d1",
-            company_id="prev-co",
-            persona_id="prev-persona",
-            subject_line="Noticed your ML scaling challenge",
-            body="Hi, saw your recent hiring push for ML engineers...",
-            confidence_score=0.85,
-            approved=True,
-            version=1,
-        )
-    ]
+    # Approved draft from memory
+    approved_draft = Draft(
+        draft_id="d1",
+        company_id="prev-co",
+        persona_id="prev-persona",
+        subject_line="Noticed your ML scaling challenge",
+        body="Hi, saw your recent hiring push for ML engineers...",
+        confidence_score=0.85,
+        approved=True,
+        version=1,
+    )
 
     persona_id = "persona-mem-test"
     persona = Persona(
@@ -424,12 +422,28 @@ async def test_memory_injection_passes_few_shot_examples():
         is_edited=False,
     )
 
-    from backend.models.state import CompanyState, ResearchResult, SolutionMappingOutput, SynthesisOutput
-    from tests.test_integration import _make_company_state, _make_cost_metadata
-
     cs = _make_company_state(company_id="mem-co", company_name="Memory Test Co")
     cs["selected_personas"] = [persona_id]
     cs["generated_personas"] = [persona]
+    # Set current_stage to "synthesis" so pipeline skips ingestion/qualification and goes
+    # directly to synthesis → drafts (the skip_to_synthesis path in company_pipeline)
+    cs["current_stage"] = "synthesis"
+    cs["qualified_signal"] = {
+        "company_id": "mem-co",
+        "summary": "Hiring ML engineers",
+        "signal_type": "hiring_engineering",
+        "keywords_matched": ["ml", "kubernetes"],
+        "deterministic_score": 0.7,
+        "llm_severity_score": 0.8,
+        "composite_score": 0.76,
+        "tier_used": "tier_1",
+        "raw_signals": [],
+        "qualified": True,
+        "disqualification_reason": None,
+        "partial": False,
+        "signal_ambiguity_score": 0.3,
+    }
+    cs["signal_qualified"] = True
     cs["solution_mapping"] = SolutionMappingOutput(
         core_problem="ML platform bottleneck",
         solution_areas=["ml_platform"],
@@ -450,26 +464,57 @@ async def test_memory_injection_passes_few_shot_examples():
     }
     cs["status"] = PipelineStatus.RUNNING
 
+    # Track what few_shot_examples were passed to the draft agent
     captured_few_shot: list = []
+    original_run_drafts = run_drafts_for_company
 
-    async def _mock_run_drafts(cs, seller_profile, llm_provider, llm_model,
-                                current_total_cost, max_budget_usd, few_shot_examples):
+    async def _intercepting_run_drafts(cs, seller_profile, llm_provider, llm_model,
+                                        current_total_cost, max_budget_usd, few_shot_examples):
         captured_few_shot.extend(few_shot_examples)
-        return cs, 0.005
+        # Return cs unmodified to avoid LLM calls
+        return cs, 0.0
 
-    with patch("backend.agents.memory_agent.get_few_shot_examples", return_value=approved_drafts):
-        with patch("backend.pipeline.run_drafts_for_company", new=_mock_run_drafts):
-            from backend.pipeline import company_pipeline
-            from backend.models.state import CompanyInput
-            # Call the pipeline function directly with pre-built state
-            # so we can verify few_shot_examples are passed
-            from backend.agents.memory_agent import get_few_shot_examples
-            examples = get_few_shot_examples(limit=2)
+    # Synthesis mock returns a valid synthesis JSON
+    synth_response = MagicMock()
+    synth_response.content = """{
+        "core_pain_point": "ML deployment bottleneck",
+        "technical_context": "Kubernetes, Python",
+        "solution_alignment": "ML platform tooling",
+        "persona_targeting": "Director of Engineering",
+        "buyer_relevance": "Controls platform budget",
+        "value_hypothesis": "Faster ML deployments",
+        "risk_if_ignored": "Fall behind competitors"
+    }"""
 
-    # Verify the mock returned the injected approved drafts
-    assert len(examples) == 1
-    assert examples[0]["subject_line"] == "Noticed your ML scaling challenge"
-    assert examples[0]["approved"] is True
+    from backend.pipeline import company_pipeline
+    from backend.models.state import CompanyInput
+
+    with (
+        patch("backend.pipeline.get_few_shot_examples", return_value=[approved_draft]),
+        patch("backend.pipeline.run_drafts_for_company", new=_intercepting_run_drafts),
+        patch("backend.agents.synthesis.ChatAnthropic") as MockSynthLLM,
+    ):
+        MockSynthLLM.return_value.ainvoke = AsyncMock(return_value=synth_response)
+
+        input_payload = CompanyInput(
+            company_state=cs,
+            seller_profile={"company_name": "Seller", "portfolio_summary": "ML tools", "portfolio_items": []},
+            max_budget_usd=10.0,
+            total_cost_usd_at_dispatch=0.0,
+            capability_map=None,
+            jsearch_api_key="",
+            tavily_api_key="",
+            llm_provider="anthropic",
+            llm_model="claude-sonnet-4-6",
+        )
+
+        with patch("backend.tools.tavily.TavilySearchClient.__init__", return_value=None):
+            await company_pipeline(input_payload)
+
+    # Verify few-shot examples were injected into draft generation
+    assert len(captured_few_shot) >= 1
+    assert captured_few_shot[0]["subject_line"] == "Noticed your ML scaling challenge"
+    assert captured_few_shot[0]["approved"] is True
 
 
 # ---------------------------------------------------------------------------
@@ -519,26 +564,38 @@ async def test_cost_budget_halts_ingestion():
 
 
 @pytest.mark.asyncio
-async def test_cost_budget_accumulates_across_companies():
-    """total_cost_usd accumulates correctly across multiple company branches.
+async def test_cost_budget_enforced_in_signal_ingestion():
+    """Budget enforcement: run_signal_ingestion returns early when budget exceeded.
 
-    Verifies that the operator.add reducer correctly sums costs
-    from concurrent company_pipeline executions.
+    When current_total_cost >= max_budget_usd, the ingestion agent should not
+    make expensive Tier 1 API calls. This verifies that the budget check in the
+    ingestion path works at the agent level.
     """
-    import operator
+    from backend.agents.signal_ingestion import run_signal_ingestion
+    from tests.test_integration import _make_company_state
 
-    # Simulate 3 company branches each costing $0.01
-    costs_per_company = [0.01, 0.008, 0.012]
-    total = 0.0
-    for c in costs_per_company:
-        total = operator.add(total, c)
+    cs = _make_company_state(company_id="budget-test", company_name="Budget Test Co")
+    cs["status"] = PipelineStatus.RUNNING
 
-    expected = sum(costs_per_company)
-    assert abs(total - expected) < 1e-9
+    jsearch_mock = MagicMock()
+    jsearch_mock.search_jobs = AsyncMock(return_value=[])
+    tavily_mock = MagicMock()
 
-    # Verify budget enforcement: if max is $0.02 and we've spent $0.021, we're over
-    max_budget = 0.02
-    assert total > max_budget  # Should trigger budget halt in real pipeline
+    # current_total_cost already at or beyond max_budget_usd
+    result_cs, cost = await run_signal_ingestion(
+        cs=cs,
+        capability_map=None,
+        current_total_cost=1.0,   # Already at budget
+        max_budget_usd=1.0,       # Max == current → already exceeded
+        jsearch_client=jsearch_mock,
+        tavily_client=tavily_mock,
+        llm_provider="anthropic",
+        llm_model="claude-sonnet-4-6",
+    )
+
+    # With zero budget remaining, company should not COMPLETE successfully
+    # (it will either FAIL, remain in RUNNING with empty signals, or be noted as over budget)
+    assert result_cs["status"] != PipelineStatus.COMPLETED
 
 
 # ---------------------------------------------------------------------------
