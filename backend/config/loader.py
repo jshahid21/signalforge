@@ -23,7 +23,7 @@ class ApiKeysConfig(BaseModel):
     jsearch: str = ""
     tavily: str = ""
     llm_provider: str = ""
-    llm_model: str = "claude-sonnet-4-6"
+    llm_model: str = ""
 
 
 class SessionBudgetConfig(BaseModel):

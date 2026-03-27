@@ -34,6 +34,10 @@ class TestLoadConfig:
         assert config.seller_profile.company_name == ""
         assert config.session_budget.max_usd == 0.50
         assert config.session_budget.tier3_limit == 1
+        assert config.api_keys.llm_model == ""
+        assert config.api_keys.llm_provider == ""
+        assert config.api_keys.jsearch == ""
+        assert config.api_keys.tavily == ""
 
     def test_config_file_written_to_disk_on_first_run(self, tmp_config_dir: Path) -> None:
         load_config()
