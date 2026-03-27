@@ -18,6 +18,17 @@ from backend.config.loader import is_first_run, load_config, save_config
 
 app = FastAPI(title="SignalForge API", version="0.1.0")
 
+# CORS — allow frontend dev server (Vite :5173) and any other configured origin
+from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173", "http://localhost:3000"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 # Register route modules
 app.include_router(sessions.router)
 app.include_router(companies.router)

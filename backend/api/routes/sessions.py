@@ -47,6 +47,38 @@ def _status_value(status: Any) -> str:
     return str(status)
 
 
+# List fields that must be accumulated (not overwritten) across parallel chunks.
+_APPEND_FIELDS = frozenset({
+    "completed_company_ids",
+    "failed_company_ids",
+    "active_company_ids",
+    "awaiting_review",
+    "execution_log",
+    "final_drafts",
+})
+
+
+def _merge_chunk(final_state: dict, node_output: dict) -> None:
+    """Merge a streaming chunk into final_state, respecting LangGraph reducers.
+
+    Mirrors the AgentState reducers:
+    - company_states: merge_dict  → update, don't overwrite
+    - list fields:   append_list → extend, deduplicate
+    - total_cost_usd: add_float  → accumulate
+    - all other keys:            → last-write wins
+    """
+    for key, value in node_output.items():
+        if key == "company_states" and isinstance(value, dict):
+            final_state.setdefault("company_states", {}).update(value)
+        elif key == "total_cost_usd" and isinstance(value, (int, float)):
+            final_state["total_cost_usd"] = final_state.get("total_cost_usd", 0.0) + value
+        elif key in _APPEND_FIELDS and isinstance(value, list):
+            existing: list = final_state.get(key, [])
+            final_state[key] = existing + [x for x in value if x not in existing]
+        else:
+            final_state[key] = value
+
+
 async def _run_pipeline_task(
     session_id: str,
     initial_state: AgentState,
@@ -94,7 +126,7 @@ async def _run_pipeline_task(
                         await manager.broadcast_stage_update(
                             session_id, company_id, stage, status
                         )
-                    final_state.update(node_output)
+                    _merge_chunk(final_state, node_output)
 
         active.last_state = final_state
 
@@ -254,7 +286,7 @@ async def resume_session(session_id: str) -> dict:
                             await manager.broadcast_stage_update(
                                 session_id, company_id, stage, status
                             )
-                        final_state.update(node_output)
+                        _merge_chunk(final_state, node_output)
 
             active.last_state = final_state
 

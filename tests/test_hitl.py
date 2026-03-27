@@ -134,6 +134,74 @@ class TestApplyPersonaSelection:
         assert updated["selected_personas"] == []
         assert updated["current_stage"] == "synthesis"
 
+    @pytest.mark.asyncio
+    async def test_empty_selection_does_not_advance_stage_in_gate(self) -> None:
+        """hitl_gate_node skips companies with empty selections (no full re-run).
+
+        When resume payload omits a company (empty list), the company remains
+        AWAITING_HUMAN. This prevents hitl_gate from dispatching a Send() with
+        empty selected_personas, which would trigger a full pipeline re-run.
+        """
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        # Two companies: company1 gets selection, company2 gets nothing
+        cs1 = _make_company_state()
+        cs2 = dict(_make_company_state())
+        cs2["company_id"] = "company2"
+        cs2["company_name"] = "Company 2"
+        cs1, _ = await run_persona_generation(
+            cs=cs1, llm_provider="", llm_model="",
+            current_total_cost=0.0, max_budget_usd=1.0,
+        )
+        cs1 = run_persona_selection_gate(cs1)
+        cs2 = run_persona_selection_gate(cs2)  # type: ignore[assignment]
+
+        persona_id = cs1["generated_personas"][0]["persona_id"]
+
+        from backend.models.state import AgentState
+        state = AgentState(
+            target_companies=["stripe", "company2"],
+            seller_profile={},  # type: ignore[arg-type]
+            company_states={"stripe": cs1, "company2": cs2},
+            pipeline_started_at="",
+            pipeline_completed_at=None,
+            active_company_ids=[],
+            completed_company_ids=[],
+            failed_company_ids=[],
+            awaiting_persona_selection=True,
+            awaiting_review=[],
+            execution_log=[],
+            total_cost_usd=0.0,
+            final_drafts=[],
+        )
+
+        # Resume with selection for company1 only — company2 omitted
+        resume_payload = {"stripe": [persona_id]}
+
+        from backend.agents.hitl_gate import hitl_gate_node
+
+        with (
+            patch("langgraph.types.interrupt", return_value=resume_payload),
+            patch("backend.config.loader.load_config") as mock_cfg,
+            patch("backend.config.capability_map.load_capability_map", return_value=None),
+        ):
+            mock_cfg.return_value.session_budget.max_usd = 1.0
+            mock_cfg.return_value.api_keys.jsearch = ""
+            mock_cfg.return_value.api_keys.tavily = ""
+            mock_cfg.return_value.api_keys.llm_provider = "anthropic"
+            mock_cfg.return_value.api_keys.llm_model = "claude-sonnet-4-6"
+
+            result = await hitl_gate_node(state)
+
+        from langgraph.types import Command
+        assert isinstance(result, Command)
+        # Only stripe should have been dispatched
+        assert len(result.goto) == 1
+        # company2 should remain AWAITING_HUMAN in updated_states
+        updated_states = result.update.get("company_states", {})
+        assert "company2" in updated_states
+        assert updated_states["company2"]["status"] == PipelineStatus.AWAITING_HUMAN
+
 
 class TestHITLPauseResumeCycle:
     """Integration tests for the full HITL pause/resume cycle (spec §13.3)."""

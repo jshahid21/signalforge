@@ -100,7 +100,10 @@ async def hitl_gate_node(state: AgentState) -> dict:
     })
     # selections = {company_id: [persona_id, ...]} — provided by Command(resume=...)
 
-    # Apply selections and dispatch synthesis runs
+    # Apply selections and dispatch synthesis runs.
+    # Only dispatch companies that received non-empty persona selections.
+    # Companies omitted from the resume payload (empty selection list) remain in
+    # AWAITING_HUMAN and are NOT re-dispatched, preventing a full pipeline re-run.
     config = load_config()
     capability_map = load_capability_map()
 
@@ -108,6 +111,11 @@ async def hitl_gate_node(state: AgentState) -> dict:
     sends: list = []
     for company_id, cs in awaiting.items():
         selected_ids = selections.get(company_id, []) if isinstance(selections, dict) else []
+        if not selected_ids:
+            # No selection provided — leave this company in AWAITING_HUMAN.
+            # The caller must include persona_ids for each company in the resume payload.
+            updated_states[company_id] = cs
+            continue
         updated_cs = apply_persona_selection(cs, selected_ids)
         updated_states[company_id] = updated_cs
         sends.append(Send("company_pipeline", CompanyInput(
