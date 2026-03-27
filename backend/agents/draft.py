@@ -233,7 +233,7 @@ async def run_draft(
                 parsed = attempt_parsed
                 break
         except Exception:
-            break
+            continue
 
     if parsed:
         draft = Draft(
