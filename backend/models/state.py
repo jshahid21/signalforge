@@ -67,6 +67,7 @@ class ResearchResult(TypedDict):
 class SolutionMappingOutput(TypedDict):
     core_problem: str
     solution_areas: List[str]           # Vendor-agnostic capability categories
+    inferred_areas: List[str]           # Subset of solution_areas not in capability map
     confidence_score: int               # 0–100 integer scale (per spec §5.5)
     reasoning: str
 

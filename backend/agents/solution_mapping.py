@@ -60,8 +60,9 @@ Output ONLY valid JSON, no commentary:
 {{
   "core_problem": "<1–2 sentences describing the core technical problem>",
   "solution_areas": ["<area 1>", "<area 2>", "<area 3 (optional)>"],
+  "inferred_areas": ["<list only areas NOT present in the capability map above; use [] if all areas are from the map>"],
   "confidence_score": <integer 0–100>,
-  "reasoning": "<explanation of why these areas match; note any inferred areas with (inferred)>"
+  "reasoning": "<explanation of why these areas match>"
 }}"""
 
 
@@ -90,6 +91,9 @@ def _parse_solution_mapping_response(text: str) -> dict | None:
             return None
         if not isinstance(data["solution_areas"], list):
             return None
+        # inferred_areas is optional in LLM output; default to []
+        if "inferred_areas" not in data:
+            data["inferred_areas"] = []
         return data
     except (json.JSONDecodeError, ValueError, TypeError):
         return None
@@ -141,6 +145,7 @@ async def run_solution_mapping(
     fallback_mapping = SolutionMappingOutput(
         core_problem="Unable to determine — LLM not configured or budget exceeded.",
         solution_areas=[],
+        inferred_areas=[],
         confidence_score=0,
         reasoning="LLM unavailable.",
     )
@@ -163,11 +168,14 @@ async def run_solution_mapping(
 
             if parsed:
                 sanitized_areas = _sanitize_solution_areas(parsed.get("solution_areas", []))
+                raw_inferred = parsed.get("inferred_areas", [])
+                inferred_areas = [str(a) for a in raw_inferred if isinstance(a, str)]
                 confidence = int(parsed.get("confidence_score", 0))
                 confidence = max(0, min(100, confidence))
                 solution_mapping = SolutionMappingOutput(
                     core_problem=str(parsed.get("core_problem", "")).strip(),
                     solution_areas=sanitized_areas,
+                    inferred_areas=inferred_areas,
                     confidence_score=confidence,
                     reasoning=str(parsed.get("reasoning", "")).strip(),
                 )

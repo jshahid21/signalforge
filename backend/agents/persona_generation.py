@@ -212,7 +212,7 @@ def _build_personas_for_category(
         ]
 
     if category == "hiring_engineering":
-        # Hiring signals: Technical Buyer + Influencers
+        # spec §5.6: Hiring (engineering roles) → Technical Buyer + 1–2 Influencers ONLY
         return [
             _make_persona(
                 title="Head of Platform Engineering",
@@ -235,14 +235,14 @@ def _build_personas_for_category(
                 priority_score=0.8,
             ),
             _make_persona(
-                title="VP of Engineering",
-                role_type="economic_buyer",
-                seniority_level="exec",
+                title="Senior Software Engineer",
+                role_type="influencer",
+                seniority_level="ic",
                 targeting_reason=(
-                    "Owns engineering budget and growth strategy. "
-                    "Motivated by tooling that accelerates team onboarding and delivery."
+                    "Day-to-day practitioner experiencing the tooling pain. "
+                    "Drives internal demand and word-of-mouth evaluation."
                 ),
-                priority_score=0.65,
+                priority_score=0.7,
             ),
         ]
 

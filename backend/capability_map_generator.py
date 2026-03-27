@@ -19,6 +19,13 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
+try:
+    from langchain_anthropic import ChatAnthropic
+    from langchain_core.messages import HumanMessage
+except ImportError:
+    ChatAnthropic = None  # type: ignore[assignment,misc]
+    HumanMessage = None  # type: ignore[assignment]
+
 
 @dataclass
 class CapabilityMapGeneratorInput:
@@ -97,7 +104,7 @@ async def generate_capability_map(
     Crawls product_url if provided. Passes all content to LLM for grouping.
     Saves generated map to disk and returns the CapabilityMap object.
     """
-    if not llm_model:
+    if not llm_model or ChatAnthropic is None:
         return None
 
     # Collect all content
@@ -122,9 +129,6 @@ async def generate_capability_map(
     prompt = _build_generation_prompt(extracted_content)
 
     try:
-        from langchain_anthropic import ChatAnthropic
-        from langchain_core.messages import HumanMessage
-
         llm = ChatAnthropic(model=llm_model, max_tokens=2000, temperature=0)
         response = await llm.ainvoke([HumanMessage(content=prompt)])
         capabilities_data = _parse_generation_response(str(response.content))

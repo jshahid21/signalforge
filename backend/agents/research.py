@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import json
 
+from backend.models.enums import PipelineStatus
 from backend.models.state import CompanyError, CompanyState, ResearchResult
 
 # Approximate USD cost per LLM call (3 sub-tasks total)
@@ -114,6 +115,20 @@ async def run_research(
     Returns (updated_cs, cost_incurred).
     Graceful: continues even if individual sub-tasks fail; sets partial=True.
     """
+    # Budget check before any LLM calls
+    if current_total_cost >= max_budget_usd:
+        cs = dict(cs)  # type: ignore[assignment]
+        cs["status"] = PipelineStatus.FAILED  # type: ignore[index]
+        cs["errors"] = list(cs.get("errors", [])) + [  # type: ignore[index]
+            CompanyError(
+                stage="research",
+                error_type="budget_exceeded",
+                message=f"Session budget ${max_budget_usd:.2f} exhausted before research.",
+                recoverable=False,
+            )
+        ]
+        return cs, 0.0  # type: ignore[return-value]
+
     company_name = cs["company_name"]
     qualified_signal = cs.get("qualified_signal")
     signal_summary = qualified_signal["summary"] if qualified_signal else ""

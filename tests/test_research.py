@@ -195,6 +195,24 @@ class TestRunResearch:
         assert updated_cs["research_result"]["partial"] is True
 
 
+    @pytest.mark.asyncio
+    async def test_budget_exceeded_marks_failed(self) -> None:
+        """Budget exhausted before research → company FAILED with budget_exceeded error."""
+        cs = _make_company_state("stripe")
+        updated_cs, cost = await run_research(
+            cs=cs,
+            llm_provider="anthropic",
+            llm_model="claude-sonnet-4-6",
+            current_total_cost=1.0,  # already at max
+            max_budget_usd=1.0,
+        )
+        assert updated_cs["status"] == PipelineStatus.FAILED
+        assert cost == 0.0
+        assert any(
+            e["error_type"] == "budget_exceeded" for e in updated_cs["errors"]
+        )
+
+
 class TestTechStackExtraction:
     @pytest.mark.asyncio
     async def test_returns_empty_list_with_no_model(self) -> None:
