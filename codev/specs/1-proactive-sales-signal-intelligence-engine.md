@@ -1,8 +1,8 @@
 # Spec 1: Proactive Sales Signal Intelligence Engine
 
-**Status**: Draft
+**Status**: Draft (Pending Consultation)
 **Date**: 2026-03-26
-**Version**: 1.1
+**Version**: 1.2
 
 ---
 
@@ -606,6 +606,9 @@ Signal: *hiring ML infra engineers*
 - `technical_context`: What is known about their stack / architecture decisions
 - `solution_alignment`: Which capability areas apply and why
 - `persona_targeting`: Why this persona specifically cares about this problem
+- `buyer_relevance`: Why THIS persona specifically would care — both business and technical angle (ties economic and technical motivation together)
+- `value_hypothesis`: The outcome this persona is likely optimizing for (e.g., "reduce infra cost by 30%", "ship ML models faster")
+- `risk_if_ignored`: What happens if they don't solve this — provides urgency signal without manufacturing fear
 
 ---
 
@@ -655,6 +658,38 @@ Signal: *hiring ML infra engineers*
 
 **Inputs**: Approved `Draft`, associated `SynthesisOutput`, `QualifiedSignal`
 **Outputs**: Written `MemoryRecord`; retrieval API for Draft Agent
+
+---
+
+### 5.11 Chat Assistant Agent
+
+**Role**: Answers follow-up questions about a selected company's pipeline state. Operates as a stateful conversational agent scoped to a single `CompanyState`.
+
+**Responsibilities**:
+- Respond to natural language queries about the selected company's signals, research, personas, and drafts
+- Offer draft refinement suggestions (e.g., "make this more concise", "adjust tone for a CTO")
+- Explain qualification and scoring decisions on request
+- Suggest alternative personas not in the generated set
+
+**Inputs**: Current `CompanyState` (read-only), user message, conversation history (last N turns)
+**Outputs**: Text response (streamed to UI)
+
+**Constraints**:
+- Read-only access to `CompanyState` — cannot trigger pipeline re-runs directly
+- Scoped to selected company only; cannot reason across multiple companies simultaneously
+- Must not fabricate signals or research not present in `CompanyState`
+- Draft edits suggested by the assistant are applied locally by the user, not auto-committed
+
+**Context Injection**:
+The agent receives a structured context block at the start of each turn:
+```
+Company: {company_name}
+Signal Summary: {qualified_signal.summary}
+Tech Stack: {research_result.tech_stack}
+Core Problem: {solution_mapping.core_problem}
+Selected Personas: {selected_personas}
+Current Draft (if any): {drafts[active_persona_id]}
+```
 
 ---
 
