@@ -60,6 +60,8 @@ async def company_pipeline(input: CompanyInput) -> dict:
         max_budget_usd=max_budget,
         jsearch_client=jsearch_client,
         tavily_client=tavily_client,
+        llm_provider=llm_provider,
+        llm_model=llm_model,
     )
     total_cost += ingestion_cost
     current_cost += ingestion_cost

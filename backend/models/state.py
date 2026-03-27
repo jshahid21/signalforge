@@ -54,6 +54,7 @@ class QualifiedSignal(TypedDict):
     qualified: bool
     disqualification_reason: Optional[str]
     partial: bool                   # True if LLM scoring failed; deterministic-only fallback
+    signal_ambiguity_score: float   # 1 − mean(recency, specificity); used for Tier 2 escalation
 
 
 class ResearchResult(TypedDict):

@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -10,6 +10,7 @@ from backend.agents.signal_ingestion import (
     _TIER_1_DENSITY_THRESHOLD,
     _should_escalate_to_tier_2,
     compute_signal_density,
+    estimate_ambiguity_score,
     run_signal_ingestion,
 )
 from backend.models.enums import PipelineStatus, SignalTier
@@ -346,6 +347,40 @@ class TestRunSignalIngestion:
             for e in updated_cs["errors"]
         )
         mock_tavily.search.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_ambiguity_triggers_tier2_when_density_sufficient(
+        self, mock_jsearch: AsyncMock, mock_tavily: AsyncMock
+    ) -> None:
+        """Tier 2 triggered by ambiguity > 0.7 even when density >= 3 (spec §7.1)."""
+        cs = _make_company_state("stripe")
+        cap_map = _make_mock_capability_map(["kubernetes", "ml platform", "data warehouse"])
+
+        # LLM reports high ambiguity (signal is stale/vague)
+        with patch(
+            "backend.agents.signal_qualification.call_llm_severity",
+            new=AsyncMock(
+                return_value=(
+                    {"recency": 0.1, "specificity": 0.1, "technical_depth": 0.5, "buying_intent": 0.5},
+                    10,
+                )
+            ),
+        ):
+            updated_cs, _ = await run_signal_ingestion(
+                cs=cs,
+                capability_map=cap_map,
+                current_total_cost=0.0,
+                max_budget_usd=1.0,
+                jsearch_client=mock_jsearch,
+                tavily_client=mock_tavily,
+                llm_provider="anthropic",
+                llm_model="claude-sonnet-4-6",
+            )
+
+        # ambiguity = 1 - mean(0.1, 0.1) = 0.9 > 0.7 → Tier 2 triggered
+        mock_tavily.search.assert_called_once()
+        reasons = " ".join(updated_cs["cost_metadata"]["tier_escalation_reasons"])
+        assert "ambiguity" in reasons
 
     @pytest.mark.asyncio
     async def test_tier3_eligible_logged_when_enterprise_signals(

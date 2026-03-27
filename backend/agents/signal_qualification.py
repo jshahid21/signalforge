@@ -205,6 +205,13 @@ async def run_signal_qualification(
     # Build summary from first signal content
     summary = signals[0].get("content", "")[:200] if signals else "No signals collected."
 
+    # Compute signal_ambiguity_score from LLM sub-dimensions (spec §5.3)
+    ambiguity_score = (
+        compute_signal_ambiguity_score(llm_scores)
+        if llm_scores is not None
+        else 0.5  # neutral default when LLM unavailable
+    )
+
     qualified_signal = QualifiedSignal(
         company_id=cs["company_id"],
         summary=summary,
@@ -222,6 +229,7 @@ async def run_signal_qualification(
             else f"composite_score {composite:.3f} < threshold {QUALIFICATION_THRESHOLD}"
         ),
         partial=partial,
+        signal_ambiguity_score=ambiguity_score,
     )
 
     # Update cost metadata with LLM tokens (accumulate, not overwrite)

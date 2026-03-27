@@ -28,6 +28,9 @@ from backend.models.state import (
     RawSignal,
 )
 from backend.tools.jsearch import JSearchClient
+
+# Cost estimate for pre-qualification LLM ambiguity check
+_LLM_AMBIGUITY_COST = 0.001
 from backend.tools.tavily import TavilySearchClient
 
 # Cost estimates per API call (USD)
@@ -131,6 +134,38 @@ def _should_escalate_to_tier_2(
     return False, ""
 
 
+async def estimate_ambiguity_score(
+    signals: list[RawSignal],
+    llm_provider: str,
+    llm_model: str,
+) -> float | None:
+    """Estimate signal ambiguity via quick LLM call before Tier 2 decision.
+
+    Returns signal_ambiguity_score (1 - mean(recency, specificity)) or None
+    if LLM is not configured or call fails (graceful degradation).
+
+    This is a lightweight pre-qualification LLM check used ONLY for the Tier 2
+    escalation decision (spec §7.1 ambiguity trigger). Full severity scoring
+    happens downstream in signal_qualification.py.
+    """
+    if not llm_model or not signals:
+        return None
+
+    # Import here to avoid circular deps and allow mocking
+    from backend.agents.signal_qualification import (
+        call_llm_severity,
+        compute_signal_ambiguity_score,
+    )
+
+    try:
+        scores, _ = await call_llm_severity(signals[:3], llm_provider, llm_model)
+        if scores is None:
+            return None
+        return compute_signal_ambiguity_score(scores)
+    except Exception:
+        return None
+
+
 def _has_enterprise_indicators(signals: list[RawSignal]) -> bool:
     """Heuristic check for enterprise-scale budget indicators in signals.
 
@@ -153,6 +188,8 @@ async def run_signal_ingestion(
     max_budget_usd: float,
     jsearch_client: JSearchClient,
     tavily_client: TavilySearchClient,
+    llm_provider: str = "",
+    llm_model: str = "",
 ) -> tuple[CompanyState, float]:
     """Run tiered signal ingestion for one company.
 
@@ -202,8 +239,19 @@ async def run_signal_ingestion(
     cs = dict(cs)  # type: ignore[assignment]
 
     # --- Tier 2 (conditional) ---
+    # Pre-qualification LLM ambiguity check: evaluate recency + specificity of Tier 1
+    # signals to detect if they are too vague/stale (ambiguity > 0.7). This is a
+    # lightweight call using only the first 3 signals to inform the Tier 2 decision.
+    # Gracefully skipped if LLM is not configured or budget is insufficient.
+    ambiguity_score: float | None = None
+    llm_ambiguity_budget = max_budget_usd - (current_total_cost + cost_incurred)
+    if llm_model and llm_ambiguity_budget >= _LLM_AMBIGUITY_COST:
+        ambiguity_score = await estimate_ambiguity_score(all_signals, llm_provider, llm_model)
+        if ambiguity_score is not None:
+            cost_incurred += _LLM_AMBIGUITY_COST
+
     should_t2, reason_t2 = _should_escalate_to_tier_2(
-        all_signals, keywords, signal_ambiguity_score=None
+        all_signals, keywords, signal_ambiguity_score=ambiguity_score
     )
     if should_t2:
         budget_remaining = max_budget_usd - (current_total_cost + cost_incurred)
