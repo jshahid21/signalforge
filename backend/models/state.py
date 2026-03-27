@@ -53,6 +53,7 @@ class QualifiedSignal(TypedDict):
     raw_signals: List[RawSignal]
     qualified: bool
     disqualification_reason: Optional[str]
+    partial: bool                   # True if LLM scoring failed; deterministic-only fallback
 
 
 class ResearchResult(TypedDict):

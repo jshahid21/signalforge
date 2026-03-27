@@ -314,6 +314,55 @@ class TestRunSignalQualification:
         assert call_counter["n"] == 0
 
     @pytest.mark.asyncio
+    async def test_partial_flag_set_on_llm_failure(self) -> None:
+        """partial=True when LLM JSON parse fails (spec §5.3)."""
+        signals = [_make_signal("kubernetes")]
+        cs = _make_company_state(signals)
+        cap_map = _make_cap_map(["kubernetes"])
+
+        with patch(
+            "backend.agents.signal_qualification.call_llm_severity",
+            new=AsyncMock(return_value=(None, 0)),
+        ):
+            updated_cs, _ = await run_signal_qualification(
+                cs=cs,
+                capability_map=cap_map,
+                llm_provider="anthropic",
+                llm_model="claude-sonnet-4-6",
+                current_total_cost=0.0,
+                max_budget_usd=1.0,
+            )
+
+        assert updated_cs["qualified_signal"]["partial"] is True
+
+    @pytest.mark.asyncio
+    async def test_partial_flag_false_on_successful_llm(self) -> None:
+        """partial=False when LLM scoring succeeds."""
+        signals = [_make_signal("kubernetes")]
+        cs = _make_company_state(signals)
+        cap_map = _make_cap_map(["kubernetes"])
+
+        with patch(
+            "backend.agents.signal_qualification.call_llm_severity",
+            new=AsyncMock(
+                return_value=(
+                    {"recency": 0.8, "specificity": 0.8, "technical_depth": 0.8, "buying_intent": 0.8},
+                    100,
+                )
+            ),
+        ):
+            updated_cs, _ = await run_signal_qualification(
+                cs=cs,
+                capability_map=cap_map,
+                llm_provider="anthropic",
+                llm_model="claude-sonnet-4-6",
+                current_total_cost=0.0,
+                max_budget_usd=1.0,
+            )
+
+        assert updated_cs["qualified_signal"]["partial"] is False
+
+    @pytest.mark.asyncio
     async def test_qualification_threshold_boundary_just_above(self) -> None:
         """Score just above threshold (0.46) should qualify."""
         signals = [_make_signal("kubernetes")]

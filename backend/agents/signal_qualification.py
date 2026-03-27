@@ -221,15 +221,16 @@ async def run_signal_qualification(
             if composite >= QUALIFICATION_THRESHOLD
             else f"composite_score {composite:.3f} < threshold {QUALIFICATION_THRESHOLD}"
         ),
+        partial=partial,
     )
 
-    # Update cost metadata with LLM tokens
+    # Update cost metadata with LLM tokens (accumulate, not overwrite)
     old_cost = cs.get("cost_metadata", {})
     updated_cost = CostMetadata(
         tier_1_calls=old_cost.get("tier_1_calls", 0),
         tier_2_calls=old_cost.get("tier_2_calls", 0),
         tier_3_calls=old_cost.get("tier_3_calls", 0),
-        llm_tokens_used=llm_tokens,
+        llm_tokens_used=old_cost.get("llm_tokens_used", 0) + llm_tokens,
         estimated_cost_usd=old_cost.get("estimated_cost_usd", 0.0) + cost_incurred,
         tier_escalation_reasons=old_cost.get("tier_escalation_reasons", []),
     )

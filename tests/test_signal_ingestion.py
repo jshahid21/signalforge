@@ -311,3 +311,82 @@ class TestRunSignalIngestion:
 
         assert updated_cs["cost_metadata"]["estimated_cost_usd"] == cost
         assert updated_cs["cost_metadata"]["tier_1_calls"] == 1
+
+    @pytest.mark.asyncio
+    async def test_budget_exceeded_on_tier2_marks_failed(
+        self, mock_tavily: AsyncMock
+    ) -> None:
+        """Tier 2 required but budget insufficient → mark FAILED (spec §5.2)."""
+        # Only 1 job returned → density < 3 → Tier 2 needed
+        jsearch_low = AsyncMock()
+        jsearch_low.search_jobs.return_value = [
+            {
+                "job_title": "Office Manager",
+                "job_description": "manages office",
+                "job_apply_link": None,
+                "job_posted_at_datetime_utc": None,
+            }
+        ]
+        cs = _make_company_state("stripe")
+        cap_map = _make_mock_capability_map(["kubernetes"])
+
+        # Budget: 0.001 (only covers Tier 1, not Tier 2 which costs 0.005)
+        updated_cs, _ = await run_signal_ingestion(
+            cs=cs,
+            capability_map=cap_map,
+            current_total_cost=0.0,
+            max_budget_usd=0.002,  # enough for Tier 1 (0.001) but not Tier 2 (0.005)
+            jsearch_client=jsearch_low,
+            tavily_client=mock_tavily,
+        )
+
+        assert updated_cs["status"] == PipelineStatus.FAILED
+        assert any(
+            e["error_type"] == "budget_exceeded"
+            for e in updated_cs["errors"]
+        )
+        mock_tavily.search.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_tier3_eligible_logged_when_enterprise_signals(
+        self, mock_jsearch: AsyncMock, mock_tavily: AsyncMock
+    ) -> None:
+        """Tier 3 eligibility is detected and logged when enterprise indicators present."""
+        # Tavily returns enterprise-scale signal
+        mock_tavily.search.return_value = [
+            {
+                "url": "https://example.com/blog",
+                "title": "Platform Engineering at scale",
+                "content": "We run platform engineering for thousands of engineers",
+            },
+            {
+                "url": "https://example.com/blog2",
+                "title": "Enterprise infrastructure",
+                "content": "Our enterprise platform scales globally",
+            },
+        ]
+        # Only 1 matching job → density < 3 → Tier 2 triggered
+        jsearch_low = AsyncMock()
+        jsearch_low.search_jobs.return_value = [
+            {
+                "job_title": "Office Manager",
+                "job_description": "office management",
+                "job_apply_link": None,
+                "job_posted_at_datetime_utc": None,
+            }
+        ]
+        cs = _make_company_state("stripe")
+        cap_map = _make_mock_capability_map(["kubernetes"])
+
+        updated_cs, _ = await run_signal_ingestion(
+            cs=cs,
+            capability_map=cap_map,
+            current_total_cost=0.0,
+            max_budget_usd=1.0,
+            jsearch_client=jsearch_low,
+            tavily_client=mock_tavily,
+        )
+
+        # Tier 3 eligibility should be logged in escalation reasons
+        reasons = " ".join(updated_cs["cost_metadata"]["tier_escalation_reasons"])
+        assert "tier_3" in reasons

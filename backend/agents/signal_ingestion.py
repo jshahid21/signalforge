@@ -109,19 +109,41 @@ def _should_escalate_to_tier_2(
     keywords: list[str],
     signal_ambiguity_score: float | None,
 ) -> tuple[bool, str]:
-    """Return (should_escalate, reason) for Tier 2 escalation."""
+    """Return (should_escalate, reason) for Tier 2 escalation (spec §7.1).
+
+    Triggers if ANY of:
+    - signal density < 3 (fewer than 3 relevant job postings), OR
+    - deterministic_score == 0 (no capability map keywords matched in any signal), OR
+    - signal_ambiguity_score > 0.7 (LLM scores signal as non-specific or stale)
+
+    NOTE: signal_ambiguity_score requires LLM severity output from a pre-qualification
+    step, which is not available during ingestion (chicken-and-egg with qualification).
+    It is computed from recency + specificity sub-scores. For Phase 3, it is passed as
+    None and checked only when available (e.g., from a prior pipeline run or re-run).
+    """
     density = compute_signal_density(raw_signals, keywords)
     if density < _TIER_1_DENSITY_THRESHOLD:
         return True, f"signal density {density} < threshold {_TIER_1_DENSITY_THRESHOLD}"
-
-    # Deterministic score = 0 means no keyword match at all
-    if density == 0:
-        return True, "deterministic_score == 0 (no capability keywords matched)"
 
     if signal_ambiguity_score is not None and signal_ambiguity_score > 0.7:
         return True, f"signal_ambiguity_score {signal_ambiguity_score:.2f} > 0.7"
 
     return False, ""
+
+
+def _has_enterprise_indicators(signals: list[RawSignal]) -> bool:
+    """Heuristic check for enterprise-scale budget indicators in signals.
+
+    Detects phrases that suggest large engineering investment / enterprise scale.
+    Used in Tier 3 escalation threshold check (spec §7.2).
+    """
+    enterprise_terms = [
+        "enterprise", "at scale", "multi-region", "global infrastructure",
+        "thousands of", "petabyte", "hyperscale", "platform team",
+        "platform engineering", "staff engineer", "principal engineer",
+    ]
+    combined = " ".join(s.get("content", "") for s in signals).lower()
+    return any(term in combined for term in enterprise_terms)
 
 
 async def run_signal_ingestion(
@@ -177,32 +199,66 @@ async def run_signal_ingestion(
     tier_2_calls = 0
     tier_3_calls = 0
     escalation_reasons: list[str] = []
+    cs = dict(cs)  # type: ignore[assignment]
 
     # --- Tier 2 (conditional) ---
-    budget_remaining = max_budget_usd - (current_total_cost + cost_incurred)
     should_t2, reason_t2 = _should_escalate_to_tier_2(
         all_signals, keywords, signal_ambiguity_score=None
     )
-    if should_t2 and budget_remaining > _TIER_2_COST_PER_CALL:
-        escalation_reasons.append(f"tier_2: {reason_t2}")
-        try:
-            tier_2_signals = await run_tier_2(company_name, tavily_client)
-            all_signals.extend(tier_2_signals)
-            cost_incurred += _TIER_2_COST_PER_CALL
-            tier_2_calls = 1
-        except Exception as exc:
-            cs = dict(cs)  # type: ignore[assignment]
-            cs["errors"] = list(cs.get("errors", [])) + [
+    if should_t2:
+        budget_remaining = max_budget_usd - (current_total_cost + cost_incurred)
+        if budget_remaining < _TIER_2_COST_PER_CALL:
+            # Budget insufficient for Tier 2 → mark FAILED (spec §5.2)
+            cs["status"] = PipelineStatus.FAILED  # type: ignore[index]
+            cs["errors"] = list(cs.get("errors", [])) + [  # type: ignore[index]
                 CompanyError(
                     stage="signal_ingestion_tier2",
-                    error_type=type(exc).__name__,
-                    message=str(exc),
-                    recoverable=True,
+                    error_type="budget_exceeded",
+                    message=f"Tier 2 required ({reason_t2}) but session budget exhausted.",
+                    recoverable=False,
                 )
             ]
+        else:
+            escalation_reasons.append(
+                f"tier_2: {reason_t2} (tier_1_signals={len(tier_1_signals)})"
+            )
+            try:
+                tier_2_signals = await run_tier_2(company_name, tavily_client)
+                all_signals.extend(tier_2_signals)
+                cost_incurred += _TIER_2_COST_PER_CALL
+                tier_2_calls = 1
+                escalation_reasons[-1] += f" tier_2_signals={len(tier_2_signals)}"
+            except Exception as exc:
+                cs["errors"] = list(cs.get("errors", [])) + [  # type: ignore[index]
+                    CompanyError(
+                        stage="signal_ingestion_tier2",
+                        error_type=type(exc).__name__,
+                        message=str(exc),
+                        recoverable=True,
+                    )
+                ]
 
-    # Tier 3 is handled in Phase 3 as a stub — no deep enrichment source configured yet.
-    # Escalation logic for Tier 3 will be activated in later phases when sources are configured.
+    # --- Tier 3 (conditional) ---
+    # Spec §7.2: Tier 3 triggers if BOTH:
+    #   - Tier 2 composite score >= 0.75 (estimated by Tier 2 signal richness as proxy)
+    #   - Enterprise budget indicators present in signals
+    # Tier 3 source is configurable — if not provided, log and skip.
+    # NOTE: Full composite score requires LLM severity scoring (from qualification).
+    # As a proxy, we check if at least 2 Tier 2 signals were retrieved AND enterprise
+    # indicators are present in the combined signal content.
+    tier_2_signals_collected = [s for s in all_signals if s.get("tier") == SignalTier.TIER_2]
+    tier_3_eligible = len(tier_2_signals_collected) >= 2 and _has_enterprise_indicators(all_signals)
+    if tier_3_eligible:
+        budget_remaining = max_budget_usd - (current_total_cost + cost_incurred)
+        if budget_remaining < _TIER_3_COST_PER_CALL:
+            escalation_reasons.append("tier_3: eligible but budget exhausted")
+        else:
+            # Tier 3 source is configurable — not yet implemented; log intent
+            escalation_reasons.append(
+                "tier_3: eligible (enterprise indicators detected) but no Tier 3 source configured"
+            )
+            # Future: call configurable Tier 3 enrichment API here
+            # tier_3_calls = 1 when implemented
 
     # Build updated cost metadata
     updated_cost = CostMetadata(
@@ -214,10 +270,11 @@ async def run_signal_ingestion(
         tier_escalation_reasons=escalation_reasons,
     )
 
-    updated_cs = dict(cs)  # type: ignore[assignment]
-    updated_cs["raw_signals"] = all_signals
-    updated_cs["cost_metadata"] = updated_cost
-    updated_cs["status"] = PipelineStatus.RUNNING
-    updated_cs["current_stage"] = "signal_qualification"
+    cs["raw_signals"] = all_signals  # type: ignore[index]
+    cs["cost_metadata"] = updated_cost  # type: ignore[index]
+    # Preserve FAILED status if budget exceeded during tier escalation
+    if cs.get("status") != PipelineStatus.FAILED:  # type: ignore[index]
+        cs["status"] = PipelineStatus.RUNNING  # type: ignore[index]
+        cs["current_stage"] = "signal_qualification"  # type: ignore[index]
 
-    return updated_cs, cost_incurred  # type: ignore[return-value]
+    return cs, cost_incurred  # type: ignore[return-value]
