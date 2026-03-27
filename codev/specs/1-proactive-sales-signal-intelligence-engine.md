@@ -1,8 +1,8 @@
 # Spec 1: Proactive Sales Signal Intelligence Engine
 
-**Status**: Draft (Consultation Feedback Incorporated)
-**Date**: 2026-03-26
-**Version**: 1.3
+**Status**: Draft (Architect Annotations Incorporated)
+**Date**: 2026-03-27
+**Version**: 1.4
 
 ---
 
@@ -84,8 +84,8 @@ The system is designed to generalize, but these companies serve as canonical gro
 - Snowflake
 - Cloudflare
 - Stripe
-- Upbound Group (Rent-A-Center) — enterprise retail / FinTech infrastructure
-- Staples — enterprise retail / procurement automation
+- Upbound Group (Rent-A-Center)
+- Staples
 
 ---
 
@@ -381,34 +381,39 @@ class AgentState(TypedDict):
 
 ### 4.2 Capability Map Schema
 
-The Capability Map is a vendor-agnostic, user-configurable JSON/YAML file that maps problem signals to solution categories.
+The Capability Map is a **LLM-generated, seller-tailored** knowledge scaffold that helps the Solution Mapping Agent consistently classify technical problems. It is not a static lookup table — the LLM performs the actual reasoning. The map provides structured context to improve consistency and reduce hallucination.
+
+**Key design principle**: The map is auto-generated from the seller's profile during onboarding (Section 8.1). The user never writes YAML by hand. They can optionally review and extend it via Settings.
 
 ```yaml
-# capability_map.yaml
+# capability_map.yaml  (auto-generated — do not edit manually)
 version: "1.0"
+generated_from: "seller_profile"
 capabilities:
   - id: "data_platform_scalability"
     label: "Data Platform Scalability"
-    keywords: ["data warehouse", "query performance", "petabyte", "data lakehouse"]
-    problem_patterns:
-      - "scaling data warehouse"
-      - "slow query times on large datasets"
-    solution_areas:
+    problem_signals:            # Natural language — LLM uses these as semantic anchors
+      - "scaling data warehouse to petabyte range"
+      - "slow query times on large analytical datasets"
+      - "migrating off on-prem data warehouse"
+    solution_areas:             # Vendor-agnostic capability categories
       - "Distributed query execution"
       - "Columnar storage optimization"
       - "Data lakehouse architecture"
 
   - id: "ml_infra"
     label: "ML Infrastructure"
-    keywords: ["model training", "GPU", "model serving", "inference latency"]
-    problem_patterns:
+    problem_signals:
       - "deploying ML models at scale"
-      - "GPU cost optimization"
+      - "reducing GPU cost for model training"
+      - "accelerating time-to-production for ML models"
     solution_areas:
       - "Managed model training"
       - "Inference optimization"
       - "MLOps platforms"
 ```
+
+**What changed from keyword matching**: The map no longer uses rigid `keywords` arrays. Instead, `problem_signals` are semantic descriptions consumed by the LLM as few-shot anchors. This allows the LLM to match signals that don't share exact vocabulary — a job posting for "Staff Reliability Engineer (ML)" can match `ml_infra` even without the word "GPU".
 
 ### 4.3 Memory Record Schema
 
@@ -554,8 +559,9 @@ qualification_threshold = 0.45  # Configurable
 **Role**: Maps the qualified signal and research context to vendor-agnostic solution areas using the Capability Map.
 
 **Responsibilities**:
-- Identify the core technical problem
-- Match problem to capability map entries
+- Identify the core technical problem from signals and research context (LLM-first, not keyword-first)
+- Use the capability map as a semantic scaffold — the LLM reasons against `problem_signals` anchors to improve consistency, but is NOT limited to map entries
+- If no map entry matches well, the LLM still outputs a best-fit solution area from first principles
 - Assign confidence score (0–100)
 - Output reasoning for transparency
 
@@ -564,7 +570,7 @@ qualification_threshold = 0.45  # Configurable
 
 **Constraints**:
 - Must NOT reference specific vendor products
-- Must NOT hallucinate capability map entries
+- Must NOT fabricate capability map entries — if generating a novel solution area outside the map, it must be clearly labeled as `inferred: true` in the output
 - Confidence score below 50 must flag `human_review_required = true`
 
 **Confidence Score Scale Note**:
@@ -636,6 +642,8 @@ Signal: *hiring ML infra engineers*
   | ML Platform Lead | Technical Buyer | High | Owns implementation of ML infra |
   | Head of AI | Economic Buyer | Medium | Budget authority for AI platform spend |
   | Senior ML Engineer | Influencer | Low | Day-to-day practitioner pain point |
+
+  *(Illustrative example only — actual personas are generated dynamically based on signal type, company context, and seller profile. The user can edit titles, add custom personas, or remove any generated one.)*
 
 - **Default selection**: Top 1–2 personas (by `priority_score`) are pre-selected; user can override
 - User actions allowed:
@@ -902,25 +910,45 @@ Every tier transition must log:
 
 ## 8. Solution Mapping
 
-### 8.1 Capability Map Loading
+### 8.1 Capability Map Generation (Auto from Seller Profile)
 
-- Loaded at startup from `capability_map.yaml`
-- Hot-reloadable (no restart required)
-- User can supply a custom capability map via settings
+The capability map is **never hand-written by the user**. It is generated automatically from their Seller Profile during onboarding and can be regenerated at any time via Settings → Capability Map.
 
-### 8.2 Matching Logic
+**Generation inputs** (user provides one or more):
+- **Product list**: Paste a list of SKUs, service names, or offering names (e.g., from a compensation plan)
+- **Product URL**: Link to their company's product/solutions page — system crawls and extracts product names and descriptions
+- **Territory**: Free-text description of their focus area (e.g., "Enterprise accounts in financial services and retail, focused on data and AI")
 
-1. Extract keywords from `QualifiedSignal.summary` and `ResearchResult`
-2. Score each capability map entry by keyword overlap (deterministic)
-3. LLM re-ranks and selects top 3 solution areas with reasoning
-4. Confidence score reflects: keyword overlap + LLM certainty + signal specificity
+**Generation process**:
+1. System extracts product names and descriptions from the provided inputs
+2. LLM groups products into problem-domain categories (e.g., "Data Platform", "ML Infra", "Cost Optimization")
+3. For each category, LLM generates: `problem_signals` (semantic anchors) and `solution_areas` (vendor-agnostic capability descriptions)
+4. Output is saved as `capability_map.yaml` in local config
+
+**Post-generation**:
+- User can review the generated map in Settings → Capability Map (read-only table view)
+- User can add custom entries or delete irrelevant ones
+- Map can be regenerated at any time (e.g., when the seller's portfolio changes)
+- Hot-reloadable — no restart required after edits
+
+### 8.2 Matching Logic (LLM-First)
+
+1. **Construct context**: Combine `QualifiedSignal.summary`, `ResearchResult`, and the full capability map (as structured context) into the LLM prompt
+2. **LLM identifies core problem**: LLM reasons over the signal to identify the underlying technical problem — in plain language, not constrained to map vocabulary
+3. **LLM selects or infers solution areas**: LLM picks the best-matching capability map entries (if they fit) OR generates a novel solution area if no map entry is a good match (tagged `inferred: true`)
+4. **LLM selects top 3 solution areas** with ranking rationale
+5. **Confidence score** reflects: LLM certainty (self-reported) + signal specificity + whether solution areas were map-matched vs. inferred
+
+**Why LLM-first**: Signal vocabulary is too diverse to rely on keyword overlap across different industries, company types, and seller contexts. A job posting saying "Staff Reliability Engineer (ML Systems)" conveys the same buying signal as one saying "Senior GPU Infrastructure Engineer" — keyword matching would treat these differently; LLM reasoning treats them the same.
 
 ### 8.3 Vendor-Agnostic Constraint
 
-The Solution Mapping Agent must:
-- Never output vendor product names (e.g., "Snowflake", "Databricks", "AWS Glue")
-- Only output capability categories (e.g., "Columnar storage optimization", "Distributed query execution")
-- The vendor application layer is the seller's responsibility, not the system's
+The Solution Mapping Agent operates in a **vendor-agnostic problem space**:
+- Output is always in terms of capability categories and problem descriptions (e.g., "Columnar storage optimization", "Distributed query execution")
+- Never output vendor product names in solution areas (e.g., "Snowflake", "Databricks", "AWS Glue")
+- The seller's specific products are applied at the **Draft Agent stage** via `seller_profile.portfolio_items`, not here
+
+This constraint holds regardless of whether the solution area was map-matched or LLM-inferred. The boundary between "what the problem is" (this stage) and "what the seller offers to solve it" (Draft stage) must remain clean.
 
 ---
 
