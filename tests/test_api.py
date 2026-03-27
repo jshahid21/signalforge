@@ -179,9 +179,7 @@ class TestSessionEndpoints:
 
     async def test_create_session_returns_session_id(self, client, monkeypatch) -> None:
         """POST /sessions returns session_id and status=running."""
-        # Mock the pipeline to avoid actually running it
-        import asyncio
-
+        # Mock the pipeline task — checkpointer is managed inside the task
         async def _mock_pipeline_task(*args, **kwargs):
             pass
 
@@ -190,17 +188,9 @@ class TestSessionEndpoints:
             _mock_pipeline_task,
         )
 
-        # Mock AsyncSqliteSaver
-        from unittest.mock import AsyncMock, MagicMock, patch
-        mock_checkpointer = MagicMock()
-        mock_checkpointer.__aenter__ = AsyncMock(return_value=mock_checkpointer)
-        mock_checkpointer.__aexit__ = AsyncMock(return_value=None)
-
-        with patch("langgraph.checkpoint.sqlite.aio.AsyncSqliteSaver.from_conn_string",
-                   return_value=mock_checkpointer):
-            resp = await client.post("/sessions", json={
-                "company_names": ["Stripe", "Datadog"],
-            })
+        resp = await client.post("/sessions", json={
+            "company_names": ["Stripe", "Datadog"],
+        })
 
         assert resp.status_code == 201
         data = resp.json()
@@ -214,8 +204,6 @@ class TestSessionEndpoints:
 
     async def test_list_sessions_after_create(self, client, monkeypatch) -> None:
         """Sessions appear in the list after creation."""
-        import asyncio
-
         async def _mock_pipeline_task(*args, **kwargs):
             pass
 
@@ -224,14 +212,7 @@ class TestSessionEndpoints:
             _mock_pipeline_task,
         )
 
-        from unittest.mock import AsyncMock, MagicMock, patch
-        mock_checkpointer = MagicMock()
-        mock_checkpointer.__aenter__ = AsyncMock(return_value=mock_checkpointer)
-        mock_checkpointer.__aexit__ = AsyncMock(return_value=None)
-
-        with patch("langgraph.checkpoint.sqlite.aio.AsyncSqliteSaver.from_conn_string",
-                   return_value=mock_checkpointer):
-            resp = await client.post("/sessions", json={"company_names": ["Stripe"]})
+        resp = await client.post("/sessions", json={"company_names": ["Stripe"]})
         session_id = resp.json()["session_id"]
 
         sessions = await client.get("/sessions")
@@ -418,3 +399,227 @@ class TestConnectionManager:
         mgr.disconnect(mock_ws, "sess-2")
 
         assert "sess-2" not in mgr._connections
+
+
+# ---------------------------------------------------------------------------
+# Session resume endpoint
+# ---------------------------------------------------------------------------
+
+
+class TestSessionResume:
+    async def test_resume_unknown_session_returns_404(self, client) -> None:
+        resp = await client.post("/sessions/nonexistent/resume")
+        assert resp.status_code == 404
+
+    async def test_resume_completed_session_returns_409(self, client) -> None:
+        from backend.api.session_store import create_session_record, update_session_record
+
+        create_session_record("s-done", ["A"], {})
+        update_session_record("s-done", "completed")
+
+        resp = await client.post("/sessions/s-done/resume")
+        assert resp.status_code == 409
+
+    async def test_resume_failed_session_starts_background_task(self, client, monkeypatch) -> None:
+        from backend.api.session_store import create_session_record, update_session_record
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        create_session_record("s-fail", ["A"], {})
+        update_session_record("s-fail", "failed")
+
+        mock_checkpointer = MagicMock()
+        mock_checkpointer.__aenter__ = AsyncMock(return_value=mock_checkpointer)
+        mock_checkpointer.__aexit__ = AsyncMock(return_value=None)
+
+        mock_graph = MagicMock()
+
+        async def _empty_astream(*args, **kwargs):
+            return
+            yield  # make it an async generator
+
+        mock_graph.astream = _empty_astream
+
+        with patch("langgraph.checkpoint.sqlite.aio.AsyncSqliteSaver.from_conn_string",
+                   return_value=mock_checkpointer), \
+             patch("backend.pipeline.build_pipeline", return_value=mock_graph):
+            resp = await client.post("/sessions/s-fail/resume")
+
+        assert resp.status_code == 202
+        data = resp.json()
+        assert data["session_id"] == "s-fail"
+
+
+# ---------------------------------------------------------------------------
+# Persona edit endpoint
+# ---------------------------------------------------------------------------
+
+
+class TestPersonaEdit:
+    def _setup_session_with_company(self, session_id: str, company_id: str) -> None:
+        from backend.api.session_store import (
+            ActiveSession,
+            create_session_record,
+            register_session,
+        )
+
+        create_session_record(session_id, [company_id], {})
+        active = ActiveSession(session_id=session_id)
+        active.last_state = {
+            "company_states": {
+                company_id: {
+                    "company_name": company_id,
+                    "generated_personas": [
+                        {
+                            "persona_id": "p1",
+                            "title": "VP Engineering",
+                            "targeting_reason": "Leads platform team",
+                            "role_type": "technical_buyer",
+                            "seniority_level": "vp",
+                            "priority_score": 0.85,
+                            "is_custom": False,
+                            "is_edited": False,
+                        }
+                    ],
+                    "drafts": {},
+                }
+            }
+        }
+        register_session(active)
+
+    async def test_edit_persona_updates_title(self, client) -> None:
+        self._setup_session_with_company("sess-pe", "acme")
+
+        resp = await client.put(
+            "/sessions/sess-pe/companies/acme/personas/p1",
+            json={"title": "CTO"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["persona"]["title"] == "CTO"
+        assert data["persona"]["is_edited"] is True
+
+    async def test_edit_unknown_persona_returns_404(self, client) -> None:
+        self._setup_session_with_company("sess-pe2", "acme")
+
+        resp = await client.put(
+            "/sessions/sess-pe2/companies/acme/personas/no-such-id",
+            json={"title": "CTO"},
+        )
+        assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Draft approve endpoint
+# ---------------------------------------------------------------------------
+
+
+class TestDraftApprove:
+    def _setup_session_with_draft(self, session_id: str) -> None:
+        from backend.api.session_store import (
+            ActiveSession,
+            create_session_record,
+            register_session,
+        )
+
+        create_session_record(session_id, ["stripe"], {})
+        active = ActiveSession(session_id=session_id)
+        active.last_state = {
+            "company_states": {
+                "stripe": {
+                    "company_name": "Stripe",
+                    "generated_personas": [
+                        {
+                            "persona_id": "p1",
+                            "title": "Head of Platform",
+                            "targeting_reason": "Owns infra.",
+                            "role_type": "technical_buyer",
+                            "seniority_level": "director",
+                            "priority_score": 0.9,
+                            "is_custom": False,
+                            "is_edited": False,
+                        }
+                    ],
+                    "drafts": {
+                        "p1": {
+                            "draft_id": "d1",
+                            "company_id": "stripe",
+                            "persona_id": "p1",
+                            "subject_line": "Test subject",
+                            "body": "Test body",
+                            "confidence_score": 75.0,
+                            "approved": False,
+                            "version": 1,
+                        }
+                    },
+                    "qualified_signal": None,
+                    "synthesis_outputs": {},
+                }
+            },
+            "total_cost_usd": 0.0,
+        }
+        register_session(active)
+
+    async def test_approve_draft_writes_memory_and_returns_record_id(self, client) -> None:
+        self._setup_session_with_draft("sess-da")
+
+        resp = await client.post("/sessions/sess-da/companies/stripe/drafts/p1/approve")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "record_id" in data
+        assert data["draft"]["approved"] is True
+
+    async def test_approve_nonexistent_draft_returns_404(self, client) -> None:
+        self._setup_session_with_draft("sess-da2")
+
+        resp = await client.post("/sessions/sess-da2/companies/stripe/drafts/no-pid/approve")
+        assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Chat SSE endpoint
+# ---------------------------------------------------------------------------
+
+
+class TestChatEndpoint:
+    async def test_chat_returns_404_for_missing_session(self, client) -> None:
+        resp = await client.post(
+            "/sessions/no-session/companies/stripe/chat",
+            json={"message": "Hello"},
+        )
+        assert resp.status_code == 404
+
+    async def test_chat_streams_done_event(self, client, monkeypatch) -> None:
+        from backend.api.session_store import (
+            ActiveSession,
+            create_session_record,
+            register_session,
+        )
+
+        create_session_record("sess-chat", ["stripe"], {})
+        active = ActiveSession(session_id="sess-chat")
+        active.last_state = {
+            "company_states": {
+                "stripe": {
+                    "company_name": "Stripe",
+                    "generated_personas": [],
+                    "drafts": {},
+                }
+            }
+        }
+        register_session(active)
+
+        async def _mock_stream(*args, **kwargs):
+            yield "Hello "
+            yield "world"
+
+        monkeypatch.setattr(
+            "backend.agents.chat_assistant.stream_chat_response",
+            _mock_stream,
+        )
+
+        resp = await client.post(
+            "/sessions/sess-chat/companies/stripe/chat",
+            json={"message": "Hi"},
+        )
+        assert resp.status_code == 200
+        assert "[DONE]" in resp.text

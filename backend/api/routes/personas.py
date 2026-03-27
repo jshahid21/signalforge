@@ -6,7 +6,7 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from backend.api.session_store import get_active_session, get_session_record, update_session_record
+from backend.api.session_store import get_active_session, get_async_checkpointer, get_session_record, update_session_record
 from backend.api.websocket import manager
 
 router = APIRouter(prefix="/sessions/{session_id}/companies/{company_id}/personas", tags=["personas"])
@@ -50,15 +50,11 @@ async def confirm_persona_selection(
             detail="Session is not awaiting persona selection",
         )
 
-    if active.graph is None:
-        raise HTTPException(status_code=500, detail="Pipeline graph not initialized")
-
     # Build resume payload: {company_id: [selected_persona_ids]}
-    # The hitl_gate_node expects a dict mapping company_id → [persona_id, ...]
     resume_payload = {company_id: body.selected_persona_ids}
 
-    # Add any custom personas to AgentState first if provided
-    # (custom personas are added to generated_personas list before selection)
+    # Pre-compute updated company states with custom personas for in-memory state
+    updated_company_states: Optional[dict] = None
     if body.custom_personas and active.last_state:
         company_states = dict(active.last_state.get("company_states", {}))
         if company_id in company_states:
@@ -67,10 +63,10 @@ async def confirm_persona_selection(
             existing.extend(body.custom_personas)
             cs["generated_personas"] = existing
             company_states[company_id] = cs
+            updated_company_states = company_states
             active.last_state = dict(active.last_state)
             active.last_state["company_states"] = company_states
 
-    # Resume the LangGraph pipeline via Command(resume=...)
     import asyncio
     from langgraph.types import Command
 
@@ -79,12 +75,30 @@ async def confirm_persona_selection(
     active.awaiting_persona_selection = False
     update_session_record(session_id, "running")
 
-    async def _resume():
+    async def _resume() -> None:
+        """Resume LangGraph pipeline after HITL persona selection.
+
+        Opens a fresh checkpointer, persists any custom personas to the
+        checkpoint via aupdate_state(), then invokes Command(resume=...).
+        """
+        from backend.pipeline import build_pipeline
+
         try:
-            result = await active.graph.ainvoke(
-                Command(resume=resume_payload),
-                config=config,
-            )
+            async with get_async_checkpointer() as checkpointer:
+                graph = build_pipeline(checkpointer=checkpointer)
+
+                # Persist custom personas to the checkpoint before resuming
+                if updated_company_states is not None:
+                    await graph.aupdate_state(
+                        config,
+                        {"company_states": updated_company_states},
+                    )
+
+                result = await graph.ainvoke(
+                    Command(resume=resume_payload),
+                    config=config,
+                )
+
             active.last_state = result
 
             # Check if more companies need HITL selection
