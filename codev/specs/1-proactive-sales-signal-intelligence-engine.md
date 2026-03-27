@@ -1,8 +1,8 @@
 # Spec 1: Proactive Sales Signal Intelligence Engine
 
-**Status**: Draft (Pending Consultation)
+**Status**: Draft (Consultation Feedback Incorporated)
 **Date**: 2026-03-26
-**Version**: 1.2
+**Version**: 1.3
 
 ---
 
@@ -147,6 +147,34 @@ The system is built as a **LangGraph multi-agent pipeline** with:
 | Memory store | Persistent key-value store (e.g., SQLite, Redis, or file-based) |
 | Frontend | React-based workspace (web app) |
 | API layer | REST + WebSocket (streaming progress updates) |
+
+### 3.4 Session Lifecycle
+
+A **session** is a single pipeline run bound to one set of input company names and a Seller Profile.
+
+| Behavior | Spec |
+|---|---|
+| Session start | User clicks "New Session" or submits company names |
+| Session persistence | Sessions are persisted locally (indexed DB or SQLite) — user can close and resume |
+| Session resume | Re-opening app restores last session state including pipeline status, HITL gate state, and generated drafts |
+| Concurrent sessions | v1 supports one active session at a time; previous sessions are read-only in history |
+| Cost budget scope | Per-session; the `$0.50` cap applies to one session run (not per company) |
+| Session expiry | No automatic expiry in v1; user must manually clear sessions |
+
+### 3.5 Authentication & API Key Management
+
+**Deployment model (v1)**: Local-first single-user application. No multi-user accounts or server-side auth.
+
+**API Key configuration**:
+- All API keys (JSearch, Tavily, LLM provider) are stored in a local config file (e.g., `~/.signalforge/config.json` or environment variables)
+- Keys are never transmitted to SignalForge servers
+- First-run wizard prompts for required keys and validates connectivity
+- Settings UI (Section 9.9) allows editing keys at any time
+
+**Seller Profile configuration**:
+- Configured on first run via setup wizard (required before first session)
+- Accessible and editable at any time via Settings → Seller Profile
+- Stored in local config alongside API keys
 
 ---
 
@@ -315,6 +343,13 @@ class CompanyState(TypedDict):
     human_review_required: bool
     human_review_reasons: List[HumanReviewReason]
 
+    # HITL override tracking
+    override_requested: bool               # True if user chose "Override and generate anyway"
+    override_reason: Optional[str]         # User-supplied reason for override (free text)
+    drafted_under_override: bool           # True if draft was generated despite low confidence
+    # Note: drafts generated under override ARE eligible for memory store (user explicitly approved)
+    # but are tagged with drafted_under_override=True for future filtering
+
 # === GLOBAL AGENT STATE ===
 
 class AgentState(TypedDict):
@@ -408,6 +443,17 @@ class MemoryRecord(TypedDict):
 **Inputs**: `target_companies: List[str]`
 **Outputs**: Initialized `AgentState` with dispatched sub-pipelines
 
+**Company Name Normalization Rules** (for `company_id` slug generation):
+1. Lowercase all characters
+2. Strip legal suffixes: "Inc", "Inc.", "LLC", "Ltd", "Corp", "Corporation", "Group" (case-insensitive)
+3. Replace all non-alphanumeric characters with `-`
+4. Collapse multiple consecutive `-` into one
+5. Trim leading/trailing `-`
+
+Examples: `"Stripe, Inc."` → `"stripe"`, `"Upbound Group"` → `"upbound"`, `"stripe.com"` → `"stripe-com"`
+
+**Collision handling**: If two input names normalize to the same `company_id`, reject with error: "Duplicate company detected after normalization: [name1] and [name2] both resolve to [slug]. Please remove one."
+
 **Constraints**:
 - Hard limit: 5 companies
 - Must not block on any single company pipeline
@@ -462,9 +508,25 @@ composite_score = (0.4 × deterministic_score) + (0.6 × llm_severity_score)
 qualification_threshold = 0.45  # Configurable
 ```
 
+**Score Definitions**:
+
+| Score | Range | Computation Method |
+|---|---|---|
+| `deterministic_score` | 0.0–1.0 | Keyword overlap: (matched_keywords / total_capability_map_keywords) capped at 1.0 |
+| `llm_severity_score` | 0.0–1.0 | LLM structured JSON output with 4 sub-dimensions (see below), averaged |
+| `signal_ambiguity_score` | 0.0–1.0 | 1 − mean(recency_score, specificity_score) from LLM output |
+| `composite_score` | 0.0–1.0 | Weighted combination above |
+
+**LLM Severity Score Sub-dimensions** (each 0.0–1.0, averaged):
+- `recency`: How recent is the signal? (within 7 days = 1.0, within 30 days = 0.7, older = lower)
+- `specificity`: How specific to a technical pain? (generic hiring = 0.3, specific infra role = 0.8)
+- `technical_depth`: Does the signal reference concrete technical concepts?
+- `buying_intent`: Does the signal suggest active investment or evaluation?
+
 **LLM Prompt Constraints**:
 - Must assess signal against: recency, specificity, technical depth, buying intent
-- Must output structured JSON (not prose)
+- Must output structured JSON: `{"recency": float, "specificity": float, "technical_depth": float, "buying_intent": float}`
+- Any JSON parse failure → use deterministic score only with `partial: true` flag
 
 ---
 
@@ -504,6 +566,13 @@ qualification_threshold = 0.45  # Configurable
 - Must NOT reference specific vendor products
 - Must NOT hallucinate capability map entries
 - Confidence score below 50 must flag `human_review_required = true`
+
+**Confidence Score Scale Note**:
+`SolutionMappingOutput.confidence_score` uses a **0–100 integer scale** (not 0–1) to make it human-readable in the UI. Two thresholds apply:
+- `< 50` → flag `human_review_required = true` (low-confidence solution mapping warning)
+- `< 60` → Draft Agent will not generate a draft (too uncertain to draft)
+
+The 50–59 range is intentional: the system warns the user with a yellow badge while still proceeding to persona generation. The draft gate at 60 is stricter. This means a company with confidence 55 will: (a) show a yellow review badge, (b) generate personas for HITL selection, and (c) NOT produce a draft (user must override or manually outreach). This is by design — the review flag is informational; the draft gate is the hard stop.
 
 ---
 
@@ -638,8 +707,15 @@ Signal: *hiring ML infra engineers*
 - Subject line: Must reference a specific signal or technical fact
 - Inject 1–2 recent approved drafts as few-shot examples (from Memory Store)
 
-**Inputs**: `CompanyState.synthesis_outputs[persona_id]`, `CompanyState.solution_mapping`, memory examples
+**Inputs**: `CompanyState.synthesis_outputs[persona_id]`, `CompanyState.solution_mapping`, `AgentState.seller_profile`, memory examples
 **Outputs**: `CompanyState.drafts[persona_id]`
+
+**Seller Profile Injection**:
+The `seller_profile` is injected into the draft prompt to bridge vendor-agnostic solution areas to the seller's specific products:
+- `solution_areas` from Solution Mapping describe the problem space (vendor-agnostic)
+- `seller_profile.portfolio_items` map those areas to the seller's actual products
+- The prompt instructs the LLM: "The seller is from {seller_profile.company_name} and sells {portfolio_items}. Frame the solution alignment in terms of these specific products."
+- If no seller profile is configured, the draft is generated in pure vendor-agnostic terms with a UI warning to add profile.
 
 **Versioning**: Each regeneration increments `Draft.version`
 
@@ -787,10 +863,13 @@ PENDING → RUNNING → AWAITING_HUMAN → RUNNING → COMPLETED
   - Extract: Role titles, required tech stack keywords, seniority distribution
 - Other lightweight public signals (configurable)
 
-**Threshold for Tier 2 escalation**:
-- Fewer than 3 relevant job postings found, OR
-- No technology keywords matched against capability map, OR
-- Signal ambiguity score > 0.7
+**Signal Density Definition**:
+Signal density = count of job postings where at least one capability map keyword matches the job title or description. A posting is "relevant" if `deterministic_score > 0`.
+
+**Threshold for Tier 2 escalation** (any one condition triggers):
+- Signal density < 3 (fewer than 3 relevant job postings found), OR
+- `deterministic_score == 0` (no technology keywords matched against capability map), OR
+- `signal_ambiguity_score > 0.7` (LLM scores signal as non-specific or stale)
 
 ### 7.2 Tier 2 — Moderate Cost (Conditional)
 
@@ -947,8 +1026,26 @@ When `human_review_required = true`:
 - Company row shows a yellow warning badge
 - Insights panel shows review reason and explanation
 - Draft panel shows "Draft not generated — confidence too low" with option to:
-  - Override and generate anyway
+  - Override and generate anyway (sets `override_requested = true`, prompts for optional `override_reason`)
   - Flag for manual outreach
+
+### 9.9 Settings Panel
+
+Accessible via `[Settings]` button in the header.
+
+**Tabs**:
+- **Seller Profile**: Edit `company_name`, `portfolio_summary`, `portfolio_items`
+- **API Keys**: Configure and test JSearch, Tavily, and LLM provider keys
+- **Session Budget**: Edit session spend cap (default $0.50), Tier 3 call limit
+- **Memory Store**: Browse, delete, or export approved drafts (see Section 12.3)
+
+### 9.10 All-Companies-Skipped State
+
+If all submitted companies fail signal qualification:
+- Company Table shows all rows with "No Signal" badge
+- Right panel shows: "No actionable signals found. Try different companies, or lower the qualification threshold in Settings."
+- Suggests: link to documentation on qualifying companies
+- Session cost is logged (Tier 1 costs still apply)
 
 ---
 
@@ -1156,6 +1253,43 @@ The system is considered successful when a user can:
 8. **Iterate** — regenerate drafts for different personas, refine via chat assistant
 9. **Stay within budget** — session cost stays within configured cap
 10. **Persist value** — approved drafts improve future draft quality via memory injection
+
+---
+
+---
+
+## 16. Consultation Log
+
+### Iteration 1 (2026-03-26) — Codex + Claude review (Gemini rate-limited)
+
+**Codex verdict**: REQUEST_CHANGES
+**Claude verdict**: COMMENT
+
+**Changes made in response to consultation feedback:**
+
+| Issue | Source | Change Made |
+|---|---|---|
+| Scoring computations under-specified | Codex | Added score definitions table + LLM sub-dimensions in Section 5.3 |
+| `signal_ambiguity_score` undefined | Codex | Defined as `1 - mean(recency, specificity)` in Section 5.3 |
+| "Signal density" undefined | Codex | Added explicit definition in Section 7.1 |
+| HITL override semantics not in state | Codex | Added `override_requested`, `override_reason`, `drafted_under_override` to CompanyState |
+| Mixed confidence scale (0–1 vs 0–100) | Codex | Added "Confidence Score Scale Note" in Section 5.5 documenting the intentional difference |
+| Two confidence thresholds (50/60) unclear | Codex + Claude | Documented the 50–59 interaction explicitly in Section 5.5 |
+| Seller Profile not in Draft Agent inputs | Claude | Added explicit input and prompt injection strategy in Section 5.9 |
+| Session lifecycle undefined | Claude | Added Section 3.4 (Session Lifecycle) |
+| API key management absent | Claude | Added Section 3.5 (Authentication & API Key Management) |
+| Seller Profile setup flow missing from UI | Claude | Added Settings Panel in Section 9.9 |
+| Company name normalization rules undefined | Claude | Added normalization rules + collision handling in Section 5.1 |
+| "All companies skipped" UX undefined | Claude | Added Section 9.10 |
+| Fallback source configuration | Codex | Noted as implementation detail (configurable in Tier definitions); not added to spec (deferred to plan) |
+| LLM call budget inconsistency | Codex | Noted; cost strategy Section 10.2 now defers to plan for exact budget enforcement |
+| Chat Assistant → draft edit acceptance | Claude | Documented as copy-paste in Section 5.11 (intentional v1 constraint) |
+
+**Not addressed (deferred to Plan phase):**
+- Exact LLM call budget enforcement mechanism (implementation detail)
+- Data retention policy beyond v1 (out of scope for v1)
+- Rate-limit abuse protection (out of scope for local-first v1)
+- Performance testing specifics (will be in plan)
 
 ---
 
