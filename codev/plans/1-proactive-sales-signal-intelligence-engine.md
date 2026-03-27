@@ -11,13 +11,13 @@
 SignalForge is a LangGraph multi-agent pipeline + React workspace UI. The implementation is split into 8 phases organized by dependency order:
 
 1. **Project scaffold** — repo structure, dependency setup, config management
-2. **Data models & state schema** — Python TypedDicts, Pydantic models, enums
-3. **Backend pipeline** — LangGraph agents (orchestrator → signal ingestion → qualification → research → solution mapping → persona generation → synthesis → draft)
-4. **Memory store** — SQLite-backed memory agent for few-shot injection
-5. **API layer** — FastAPI REST + WebSocket endpoints for UI integration
-6. **Frontend workspace** — React UI with all panels (company table, persona table, insights, draft, chat)
-7. **Chat assistant** — Scoped conversational agent in the UI panel
-8. **Integration & end-to-end tests** — Full pipeline tests, HITL flow, fixture-based E2E
+2. **Data models & state schema** — Python TypedDicts with LangGraph reducers, Pydantic models, enums
+3. **Signal ingestion & qualification agents** — tiered acquisition, scoring, in-agent budget enforcement
+4. **Research, solution mapping, persona generation** — parallel sub-tasks, capability map generation (URL crawling + product list + territory), outreach sequence logic
+5. **Synthesis, draft, memory & chat agents** — HITL gate, draft confidence gate, memory, chat assistant
+6. **API layer** — FastAPI REST + WebSocket, `SqliteSaver` LangGraph checkpointer for session persistence
+7. **React frontend workspace** — all panels including Capability Map Settings tab, session rehydration on resume
+8. **Integration & end-to-end tests** — Full pipeline tests, HITL flow, fixture-based E2E, LLM eval
 
 Each phase is independently testable and commits atomically.
 
@@ -105,12 +105,12 @@ Each phase is independently testable and commits atomically.
 **Dependencies**: Phase 1
 
 #### Objectives
-- Implement all TypedDicts/Pydantic models from spec §4
+- Implement all TypedDicts/Pydantic models from spec §4 with LangGraph reducers for parallel-safe global state
 - Implement enums (`SignalTier`, `PipelineStatus`, `HumanReviewReason`)
 - Implement `MemoryRecord` schema and SQLite table definition
 
 #### Deliverables
-- [ ] `backend/models/state.py` — All TypedDicts: `RawSignal`, `QualifiedSignal`, `ResearchResult`, `SolutionMappingOutput`, `Persona`, `SynthesisOutput`, `Draft`, `CostMetadata`, `CompanyError`, `SellerProfile`, `CompanyState`, `AgentState`
+- [ ] `backend/models/state.py` — All TypedDicts with reducers: `RawSignal`, `QualifiedSignal`, `ResearchResult`, `SolutionMappingOutput`, `Persona`, `SynthesisOutput`, `Draft`, `CostMetadata`, `CompanyError`, `SellerProfile`, `CompanyState`, `AgentState`
 - [ ] `backend/models/enums.py` — `SignalTier`, `PipelineStatus`, `HumanReviewReason`
 - [ ] `backend/models/memory.py` — `MemoryRecord` dataclass + SQLAlchemy model
 - [ ] `backend/db.py` — SQLite engine setup, table creation on startup
@@ -118,7 +118,14 @@ Each phase is independently testable and commits atomically.
 
 #### Implementation Details
 - Use Python `TypedDict` for LangGraph state (required by LangGraph)
-- Use Pydantic `BaseModel` for API request/response serialization
+- **LangGraph reducers for parallel-safe global state**: Fields updated by parallel `Send()` branches must use `Annotated` reducers to prevent concurrent overwrite:
+  - `total_cost_usd: Annotated[float, operator.add]` — accumulates cost across companies
+  - `completed_company_ids: Annotated[List[str], operator.concat]`
+  - `failed_company_ids: Annotated[List[str], operator.concat]`
+  - `final_drafts: Annotated[List[Draft], operator.concat]`
+  - `company_states: Annotated[Dict[str, CompanyState], merge_dict]` — custom reducer merges by company_id key
+- **Aggregation after `Send()` fan-out**: The orchestrator collects per-company `CompanyState` results dispatched by LangGraph and merges them into `AgentState.company_states` using the `merge_dict` reducer. Each company writes only to its own `company_id` key, preventing cross-company collision.
+- Use Pydantic `BaseModel` for API request/response serialization (separate from TypedDicts)
 - `SolutionMappingOutput.confidence_score` is 0–100 integer scale (per spec §5.5 note)
 - `Draft.version` starts at 1 and increments on regeneration
 - SQLite at `~/.signalforge/memory.db`; schema auto-created on startup via SQLAlchemy
@@ -126,12 +133,14 @@ Each phase is independently testable and commits atomically.
 #### Acceptance Criteria
 - [ ] All models instantiate without error
 - [ ] `CompanyState` correctly initializes all optional fields as `None` / empty lists
+- [ ] `AgentState` uses `Annotated` reducers on `total_cost_usd`, `completed_company_ids`, `failed_company_ids`, `final_drafts`, `company_states`
 - [ ] SQLite table created on `db.init()`
 - [ ] Model tests pass
 
 #### Test Plan
 - **Unit Tests**: Instantiate each model with valid and invalid data
-- **Unit Tests**: Verify `composite_score = 0.4 * det + 0.6 * llm` formula is not in the model (it's in the agent)
+- **Unit Tests**: Verify reducer behavior — two parallel updates to `total_cost_usd` accumulate (not overwrite)
+- **Unit Tests**: Verify `merge_dict` reducer merges by key without collision
 
 ---
 
@@ -162,6 +171,7 @@ Each phase is independently testable and commits atomically.
 - **LLM severity output**: structured JSON `{"recency": f, "specificity": f, "technical_depth": f, "buying_intent": f}`; fallback to deterministic-only on JSON parse failure
 - **Composite score**: `0.4 * deterministic_score + 0.6 * llm_severity_score`; threshold `0.45`
 - **Cost logging**: every tier transition logs tier, reason, estimated cost, signal count to `CostMetadata`
+- **In-agent budget enforcement**: Each agent checks `AgentState.total_cost_usd >= session_budget.max_usd` before any API call or Tier escalation. If cap is reached: skip the operation, mark company as `FAILED` with reason `budget_exceeded`, emit a WebSocket budget-exceeded event. This is enforced in the agent nodes themselves (not the API layer), because LangGraph nodes run asynchronously and cannot be killed mid-execution from outside.
 - Retry policy: signal source calls 2 retries with exponential backoff; LLM calls 1 retry on rate limit
 
 #### Acceptance Criteria
@@ -192,7 +202,8 @@ Each phase is independently testable and commits atomically.
 - [ ] `backend/agents/research.py` — Parallel sub-tasks: company context, tech stack extraction (explicit only), hiring signal analysis
 - [ ] `backend/agents/solution_mapping.py` — LLM-first reasoning over capability map, confidence scoring, vendor-agnostic output
 - [ ] `backend/agents/persona_generation.py` — Balanced buying group generation with signal→persona bias rules
-- [ ] `backend/capability_map_generator.py` — LLM-based capability map generation from seller profile inputs
+- [ ] `backend/capability_map_generator.py` — LLM-based capability map generation from seller profile inputs (product list, product URL with crawl/extract, territory text)
+- [ ] `backend/tools/web_crawler.py` — Lightweight URL crawler for product page extraction (used by capability map generator)
 - [ ] `tests/test_research.py` — Graceful degradation on sub-task failure
 - [ ] `tests/test_solution_mapping.py` — Vendor name validation, confidence thresholds
 - [ ] `tests/test_persona_generation.py` — Signal→persona bias rules
@@ -203,8 +214,14 @@ Each phase is independently testable and commits atomically.
 - **Solution Mapping**: confidence < 50 → `human_review_required = true`; confidence < 60 → draft skipped (enforced in Draft Agent)
 - **Novel solution areas**: tagged `inferred: true` in output when LLM generates outside capability map
 - **Persona bias rules** must be applied deterministically based on signal type (spec §5.6 table)
-- **Capability Map Generation** (spec §8.1): LLM groups seller portfolio into problem-domain categories → generates `problem_signals` + `solution_areas` per category → saves as YAML
+- **Capability Map Generation** (spec §8.1) — three input modes the LLM groups into problem-domain categories:
+  1. **Product list**: paste SKU/service names; LLM groups into capability categories
+  2. **Product URL**: crawl/extract product names + descriptions from URL (via `web_crawler.py`); LLM groups extracted content
+  3. **Territory text**: free-text focus area description; LLM generates categories from context
+  - For each category, LLM generates `problem_signals` (semantic anchors) + `solution_areas` (vendor-agnostic)
+  - Output saved as `~/.signalforge/capability_map.yaml`
 - Map is hot-reloadable; generation triggered by first-run wizard and Settings UI
+- **`recommended_outreach_sequence`** (spec §4/§5.6): Persona Generation Agent computes this ordered list after generating personas. Sequencing logic: start with `influencer` or `technical_buyer` if signal is technical (hiring/infra/ML signals), then `economic_buyer`. Avoid leading with `exec` unless signal is strategic (funding, cost optimization). This field is populated in `CompanyState` and displayed in the persona table as a suggested order.
 
 #### Acceptance Criteria
 - [ ] Research agent continues if any sub-task fails (sets `partial: true`)
@@ -236,10 +253,12 @@ Each phase is independently testable and commits atomically.
 - [ ] `backend/agents/draft.py` — Confidence gate (< 60 skip), persona-aware tone adaptation, seller profile injection, memory few-shot injection, versioning
 - [ ] `backend/agents/memory_agent.py` — Write `MemoryRecord` on approval, retrieve top-2 for few-shot
 - [ ] `backend/agents/hitl_gate.py` — LangGraph interrupt node for persona selection
+- [ ] `backend/agents/chat_assistant.py` — Stateful chat agent with `CompanyState` context injection, streaming SSE output
 - [ ] `backend/pipeline.py` — Updated with HITL gate wiring (interrupt + resume)
 - [ ] `tests/test_synthesis.py` — All output fields populated
 - [ ] `tests/test_draft.py` — Confidence gate boundary (59 skip, 60 generate), version increment
 - [ ] `tests/test_memory.py` — Write/read memory records, few-shot retrieval
+- [ ] `tests/test_chat_assistant.py` — Context block assembly, read-only constraint, streaming
 
 #### Implementation Details
 - **Synthesis**: runs in parallel for all selected personas via `asyncio.gather()`
@@ -249,6 +268,13 @@ Each phase is independently testable and commits atomically.
 - **Few-shot injection**: query memory store for up to 2 most recent approved drafts; inject into system prompt
 - **Override flow**: `override_requested = true` → generate draft anyway; tag `drafted_under_override = true`; still eligible for memory
 - **LangGraph HITL**: use `interrupt()` at persona selection node; pipeline resumes when `selected_personas` populated via API
+- **HumanReviewReason tracking**: Agents must explicitly set reasons using the enum (not free text):
+  - `LOW_CONFIDENCE` — `solution_mapping.confidence_score < 50` (Solution Mapping Agent)
+  - `SIGNAL_AMBIGUOUS` — `signal_ambiguity_score > 0.7` without Tier 2 resolution (Signal Qualification Agent)
+  - `PERSONA_UNRESOLVED` — persona generation produces < 2 personas (Persona Generation Agent)
+  - `DRAFT_QUALITY` — draft regeneration fails after 2 attempts (Draft Agent)
+  - Multiple reasons can accumulate; stored in `CompanyState.human_review_reasons` list
+- **Chat Assistant agent** (spec §5.11): scoped to single `CompanyState`, read-only, streaming via SSE; context block injected at each turn; cannot trigger pipeline re-runs
 - **Version**: `Draft.version` starts at 1, increments each time Draft Agent regenerates
 
 #### Acceptance Criteria
@@ -283,18 +309,20 @@ Each phase is independently testable and commits atomically.
 - [ ] `backend/api/routes/settings.py` — `GET/PUT /settings/seller-profile`, `GET/PUT /settings/api-keys`, `GET/PUT /settings/session-budget`, `POST /settings/capability-map/generate`
 - [ ] `backend/api/routes/memory.py` — `GET /memory`, `DELETE /memory/{id}`, `GET /memory/export`
 - [ ] `backend/api/routes/chat.py` — `POST /sessions/{id}/companies/{cid}/chat`
+- [ ] `backend/api/routes/chat.py` — Chat SSE endpoint (moved agent to Phase 5)
 - [ ] `backend/api/websocket.py` — WebSocket endpoint for pipeline progress events
-- [ ] `backend/api/session_store.py` — SQLite session persistence (AgentState serialization)
+- [ ] `backend/api/session_store.py` — LangGraph `SqliteSaver` checkpointer setup (replaces manual AgentState serialization)
 - [ ] `tests/test_api.py` — API endpoint smoke tests
 
 #### Implementation Details
-- Session state serialized as JSON to SQLite (AgentState → JSON → DB)
+- **LangGraph `SqliteSaver` checkpointer** (from `langgraph.checkpoint.sqlite`): used for all session persistence and HITL interrupt/resume. This is the native LangGraph mechanism — it automatically serializes graph state and enables `interrupt()` + resume semantics. The checkpointer DB file is `~/.signalforge/sessions.db`.
 - WebSocket events: `{ type: "stage_update", company_id, stage, status }` — emitted at each agent completion
+- **Pipeline status transitions** emitted as WebSocket events at each stage (per spec §6.4): `PENDING → RUNNING → AWAITING_HUMAN → RUNNING → COMPLETED / FAILED / SKIPPED`
 - HITL gate exposed via `POST /sessions/{id}/companies/{cid}/personas/confirm` with `{ selected_persona_ids, custom_personas }`
 - Draft approval via `POST .../approve` → triggers Memory Agent write
 - `GET /memory/export` returns CSV of all MemoryRecords
-- Session resume: load serialized AgentState from DB, resume LangGraph from interrupt checkpoint
-- Budget warning event: emit WebSocket event when `total_cost_usd >= 0.8 * session_budget.max_usd`
+- Session resume: call `graph.invoke(None, config={"configurable": {"thread_id": session_id}})` to resume from `SqliteSaver` checkpoint — no manual serialization needed
+- Budget warning event: emit WebSocket event when `total_cost_usd >= 0.8 * session_budget.max_usd` (agents also enforce hard stop at cap)
 
 #### Acceptance Criteria
 - [ ] `POST /sessions` starts a pipeline run and returns session_id
@@ -328,13 +356,14 @@ Each phase is independently testable and commits atomically.
 - [ ] `frontend/src/components/ChatAssistant.tsx` — Collapsible panel, scoped to selected company
 - [ ] `frontend/src/components/ProgressBar.tsx` — Per-company 5-stage pipeline progress indicator
 - [ ] `frontend/src/components/HumanReviewBadge.tsx` — Yellow warning badge with review reason
-- [ ] `frontend/src/components/SettingsPanel.tsx` — Tabs: Seller Profile, API Keys, Session Budget, Memory Store
-- [ ] `frontend/src/components/SetupWizard.tsx` — First-run wizard for seller profile + API key entry
+- [ ] `frontend/src/components/SettingsPanel.tsx` — Tabs: Seller Profile, API Keys, Session Budget, Memory Store, **Capability Map** (read-only table + add/delete entries + Regenerate button)
+- [ ] `frontend/src/components/SetupWizard.tsx` — First-run wizard for seller profile + API key entry (all three capability map input modes: product list, product URL, territory text)
 - [ ] `frontend/src/store/sessionStore.ts` — Zustand store for session state, pipeline status, selected company/persona
 - [ ] `frontend/src/api/client.ts` — Axios API client + WebSocket connection manager
 - [ ] `frontend/src/App.tsx` — Layout wiring: company table (left) + insights/draft (right) + chat (bottom)
 
 #### Implementation Details
+- **Session rehydration on app resume** (spec §3.4): On app load, fetch the most recent active session from API. If session state includes `awaiting_persona_selection = true`, restore the HITL gate UI. If session has drafts, restore them. All pipeline state comes from the API (backed by `SqliteSaver` checkpointer) — frontend Zustand store is populated from API response on mount.
 - **Status badges**: color-coded (`pending` gray, `running` blue spinner, `completed` green, `failed` red, `skipped` gray, `awaiting_human` yellow)
 - **HITL gate UI**: when `awaiting_persona_selection = true` → persona table shows selection mode with checkboxes + Confirm button
 - **Human review flag** (spec §9.8): yellow badge + "Draft not generated — confidence too low" + Override button
@@ -363,54 +392,46 @@ Each phase is independently testable and commits atomically.
 
 ---
 
-### Phase 8: Chat Assistant & End-to-End Tests
+### Phase 8: Integration & End-to-End Tests
 **Dependencies**: Phase 7
 
 #### Objectives
-- Implement `ChatAssistantAgent` (scoped, read-only, streaming)
 - Write comprehensive test fixtures (10 canonical companies)
 - Write E2E tests covering all spec §13.3 scenarios
+- Write integration tests covering all spec §13.2 scenarios
 - Write LLM eval harness (spec §13.4)
 
 #### Deliverables
-- [ ] `backend/agents/chat_assistant.py` — Stateful chat agent with `CompanyState` context injection, streaming output
 - [ ] `tests/fixtures/companies.py` — 10 canonical company fixtures with expected tier, qualification, solution areas
 - [ ] `tests/test_e2e.py` — Full pipeline E2E tests (LangChain fixture), HITL gate, memory injection, cost budget cap
-- [ ] `tests/test_integration.py` — 5-company parallel (no state collision), partial research failure, custom persona synthesis
+- [ ] `tests/test_integration.py` — 5-company parallel (no state collision), partial research failure, custom persona synthesis, all spec §13.2 scenarios
 - [ ] `tests/eval/draft_eval.py` — LLM-as-judge rubric for draft technical credibility and tone (spec §13.4)
-- [ ] `backend/api/routes/chat.py` — Updated with streaming SSE response
 
 #### Implementation Details
-- **Chat Agent context block** (spec §5.11):
-  ```
-  Company: {company_name}
-  Signal Summary: {qualified_signal.summary}
-  Tech Stack: {research_result.tech_stack}
-  Core Problem: {solution_mapping.core_problem}
-  Selected Personas: {selected_personas}
-  Current Draft (if any): {drafts[active_persona_id]}
-  ```
-- Chat agent is read-only — cannot trigger pipeline re-runs
-- Streaming via Server-Sent Events (SSE) on `POST /chat` endpoint
 - **E2E test scenarios** (spec §13.3): full run with LangChain fixture, HITL pause/resume, memory injection verification, cost budget halt
-- **Integration test**: 5 companies parallel — verify no state key collision in `company_states`
+- **Integration test scenarios** (spec §13.2):
+  - 5 companies in parallel → verify no state key collision in `company_states` (reducer test)
+  - 1 company with Tier 1 sufficient → verify no Tier 2 calls made
+  - Signal qualification fails → company SKIPPED, rest continue unaffected
+  - Partial research failure → `ResearchResult.partial = true`, pipeline continues
+  - Low confidence score → draft not generated, `human_review_required = true`
+  - User adds custom persona → Synthesis + Draft run for custom persona
 - **Fixture format**: `{ company_name, expected_tier, expected_qualified, expected_signal_type, expected_solution_areas }`
-- **LLM eval**: LLM-as-judge prompt evaluates draft on rubric: specificity (signal referenced), no generic phrases, tone match for role_type
+- **LLM eval**: LLM-as-judge prompt evaluates draft on rubric: specificity (signal referenced), no generic phrases, tone match for role_type; run against 10 fixture companies
+- All E2E tests use mock LLM + mock API clients (no real API calls in test suite)
 
 #### Acceptance Criteria
-- [ ] Chat assistant responds to "Explain why this signal was qualified" with signal details
-- [ ] Chat assistant cannot trigger pipeline re-runs (read-only)
 - [ ] All 10 fixture companies produce expected results in integration tests
-- [ ] 5-company parallel test: no state collision detected
+- [ ] 5-company parallel test: no state collision detected (reducer-based merging verified)
 - [ ] HITL gate E2E: pipeline pauses, user input provided, pipeline resumes and completes
-- [ ] Cost budget E2E: pipeline halts when `total_cost_usd >= session_budget.max_usd`
+- [ ] Cost budget E2E: pipeline halts when `total_cost_usd >= session_budget.max_usd` (in-agent check)
+- [ ] All spec §13.2 integration scenarios pass
 - [ ] All tests pass
 
 #### Test Plan
-- **Unit Tests**: Chat context block assembly from CompanyState
-- **Integration Tests**: 5 companies in parallel (spec §13.2)
+- **Integration Tests**: All 6 spec §13.2 scenarios with mock LLM
 - **E2E Tests**: All spec §13.3 scenarios
-- **Manual Testing**: Chat assistant in UI with real company data
+- **LLM Eval**: Run `tests/eval/draft_eval.py` against fixture outputs (requires real LLM; separate from pytest)
 
 ---
 
