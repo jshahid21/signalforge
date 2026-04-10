@@ -1,0 +1,36 @@
+Findings (ordered by severity)
+
+1. Missing required spec step: update `backend/config/loader.py` to document LangSmith env vars. This is explicitly in Spec section 3.1 but not in the plan phases or success criteria. This is a functional alignment gap. Spec reference: “Update `backend/config/loader.py` to document (but not enforce) these vars.” Add a plan task + success criteria.
+
+2. Phase 4 error-handling and dataset seeding requirements from spec are not fully reflected. The plan does not include:
+- Create/fetch dataset name `signalforge-draft-quality`.
+- Seed only if dataset is empty; avoid duplicates.
+- Fallback to local-only mode if dataset creation fails.
+- Catch `langsmith.evaluate()` failure and exit non-zero.
+These are core behavior requirements in the spec’s “Evaluation flow” and “Error handling” and should be explicit plan steps.
+
+3. Phase 2 test is not meaningful. “`langgraph dev --help` confirms the file is valid” does not validate `langgraph.json`. The spec success criteria requires `langgraph dev` to load the graph without error. The plan should use `langgraph dev` (or equivalent non-interactive validation) from project root.
+
+4. Phase 3 risks breaking existing optional dependency structure. The plan says “create `[project.optional-dependencies] eval` group.” If such a group already exists, creating it could overwrite or conflict. Plan should say “add `langsmith>=0.3` to existing `eval` group or create if missing.”
+
+Other notes
+
+- Alignment: Overall direction matches spec (tracing env vars, `langgraph.json`, eval integration, seed examples, docs). The missing loader update and detailed eval flow are the major gaps.
+- Task ordering: Phase ordering is logical. Phase 4 depends on Phase 3; good.
+- Risks: Risk assessment is decent, but should include dataset duplication and eval error-path behaviors.
+- Testing: Only seed example pytest is listed. The spec also calls for tracing smoke test and Studio load test; those should be reflected as manual checks.
+
+Requested changes
+
+1. Add a Phase 1 (or new subtask) step to update `backend/config/loader.py` to document LangSmith env vars; add success criteria.
+2. Expand Phase 4 steps to explicitly include dataset create/fetch, conditional seeding, error handling (dataset failure fallback, evaluate failure exit), and company-not-found behavior, per spec.
+3. Update Phase 2 test step to validate `langgraph dev` loading, not `--help`.
+4. Clarify Phase 3 to add to existing `eval` optional-deps if present.
+
+---
+VERDICT: REQUEST_CHANGES
+SUMMARY: Good overall structure, but missing spec-mandated loader update and critical eval flow/error-handling steps.
+CONFIDENCE: HIGH
+---
+
+KEY_ISSUES: Missing loader update, incomplete eval integration steps (dataset create/seed/error handling), and insufficient LangGraph Studio validation.

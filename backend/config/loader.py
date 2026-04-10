@@ -2,6 +2,16 @@
 
 Config file: ~/.signalforge/config.json
 First-run detection: config missing or seller_profile.company_name is empty.
+
+LangSmith Observability (env vars — NOT loaded here, consumed by LangChain runtime):
+  LANGCHAIN_TRACING_V2=true        Enable distributed tracing to LangSmith
+  LANGCHAIN_ENDPOINT=...           LangSmith API endpoint (default: https://api.smith.langchain.com)
+  LANGCHAIN_API_KEY=...            LangSmith API key
+  LANGCHAIN_PROJECT=signalforge    LangSmith project name for trace grouping
+
+These variables are read directly by the LangGraph/LangChain instrumentation layer
+and do not need to be loaded via load_config(). Set them in .env or the shell
+environment. See docs/observability.md for setup instructions.
 """
 from __future__ import annotations
 

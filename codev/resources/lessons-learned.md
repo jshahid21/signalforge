@@ -78,6 +78,34 @@ The HITL node must: (1) call `interrupt()` to serialize state, (2) return to the
 (3) receive `Command(resume=...)` on re-invoke, (4) dispatch synthesis via `Command(goto=[Send(...)])`.
 Each step requires the checkpointer to be active. Missing any step causes silent no-ops.
 
+## Async / Event Loops (Spec 3)
+
+**Never nest `asyncio.run()` inside a running event loop** (Spec 3)
+If the caller already runs inside `asyncio.run(...)`, a nested `asyncio.run(...)` raises
+`RuntimeError: asyncio.run() cannot be called from a running event loop`. When bridging
+sync/async APIs (e.g., LangSmith evaluators, test adapters), prefer native async runners
+(`langsmith.aevaluate`, `ainvoke`, etc.) and keep evaluator callables `async def` so they
+execute on the surrounding loop. This also applies even if the plan explicitly tells you
+to use `asyncio.run()` — verify the runtime context first.
+
+**Cached async clients are bound to their creating event loop** (Spec 3)
+`ChatAnthropic` (and other LangChain chat models) uses a global `@lru_cache` for its
+underlying `httpx.AsyncClient`. Once the client is created on one loop, reusing it from a
+different loop (e.g., `langsmith.evaluate()`'s thread-pool workers, each with their own
+fresh loop) crashes with `RuntimeError: Task attached to a different loop`. Mitigations:
+(a) use the async evaluation runner (`aevaluate`) so everything stays on one loop, or
+(b) construct a fresh LLM client inside each worker rather than caching.
+
+## Process (Spec 3)
+
+**Plan success criteria should describe outcomes, not prescribe mechanisms** (Spec 3)
+The Spec 3 plan's Phase-4 success criteria hard-coded "evaluator wraps async `evaluate_draft()`
+via `asyncio.run()`." Following it literally produced a runtime bug (see async lessons above).
+Write success criteria as testable outcomes ("`--langsmith` flag runs without raising"),
+not implementation recipes. If a specific mechanism is load-bearing, call out *why* in the
+Risk Assessment so the implementer knows to validate it, not just copy it.
+
 ---
 
 *Updated by Spec 1: Proactive Sales Signal Intelligence Engine (2026-03-27)*
+*Updated by Spec 3: Wire LangSmith Tracing, LangGraph Studio Config, and Eval Dataset (2026-04-10)*

@@ -1,0 +1,12 @@
+---
+VERDICT: REQUEST_CHANGES
+SUMMARY: Phase 1 deliverables are present, but the implementation includes severe out-of-scope changes that mask environment issues and destroy test coverage.
+CONFIDENCE: HIGH
+---
+
+KEY_ISSUES:
+- **Out of Scope (Agent File Modifications)**: The plan explicitly stated no changes to core pipeline logic were needed for this phase. However, `try/except ImportError` blocks were added to 7 core agent files (`draft.py`, `solution_mapping.py`, `synthesis.py`, `signal_ingestion.py`, `chat_assistant.py`, `research.py`, `signal_qualification.py`) to catch missing LangChain dependencies and fallback to `None`. This masks underlying environment/dependency issues instead of failing loudly when required packages are missing.
+- **Skipped Core Tests**: 14 tests across the test suite (`test_e2e.py`, `test_draft.py`, `test_integration.py`, `test_research.py`, `test_hitl.py`, `test_signal_ingestion.py`) were bypassed using `@pytest.mark.skip()`. The skipped tests cite reasons like "langgraph checkpointer incompatibility", "signature mismatch", and "confidence gate changed". If tests are failing, the root cause must be fixed or the breaking change reverted; skipping core E2E tests is unacceptable.
+- **Frontend File Change**: `frontend/src/App.tsx` was modified, which is out of scope for Phase 1 (observability docs/config only).
+
+Please revert all changes to the agent files, frontend files, and test files. Phase 1 should ONLY consist of the updates to `.env.example`, `backend/config/loader.py`, and `docs/observability.md`.

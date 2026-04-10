@@ -1,0 +1,84 @@
+Let me verify several claims in the spec against the actual codebase.Let me check the `build_pipeline` function signature and the config loader:Now I have enough context to provide a thorough review.
+
+---
+
+## Specification Review: Spec 3 — Wire LangSmith Tracing, LangGraph Studio Config, and LangSmith Evaluation Dataset
+
+### Overall Assessment
+
+This is a well-structured, clearly-written spec that accurately reflects the current codebase state. The three deliverables (tracing, Studio config, eval dataset) are cleanly scoped and sensibly bundled. I verified the key claims against the actual files, and the spec is grounded in reality. There are a few issues worth flagging.
+
+---
+
+### 1. Completeness ✅ Mostly Good
+
+**Strengths:**
+- Clear problem → desired state narrative.
+- Files to create/modify table is concrete and actionable.
+- Success criteria table with MoSCoW priorities is excellent.
+- Test scenarios cover the key paths.
+
+**Gaps:**
+- **`langsmith` dependency version**: The spec says `langsmith>=0.1` in the files table. The `langsmith` SDK is currently at 0.3.x+. The `>=0.1` floor is extremely loose — a builder should know whether to pin to `>=0.3` or similar. More importantly, the spec doesn't mention whether this belongs in `dependencies` (main) or `dev` dependencies. Since it's only used by `tests/eval/draft_eval.py`, it arguably belongs in `[project.optional-dependencies] dev` (or a new `eval` extras group), not in the main dependency list. This contradicts F5 which says "add to dependencies" without qualification.
+- **The `--langsmith` CLI flag** is mentioned in Open Questions and F3 but the design section says "Check if `LANGCHAIN_API_KEY` is set; if not, fall back." These are two different mechanisms — explicit flag vs. env var sniffing. The spec confirms the flag approach in Open Questions but the Solution Design §3.3 step 1 describes env-var detection. A builder would be confused about which is the contract. Pick one (the flag is better — explicit is better than implicit).
+
+### 2. Correctness ✅ Mostly Good
+
+**Verified against codebase:**
+- ✅ `build_pipeline(checkpointer=None)` exists at `backend/pipeline.py:208` — the `langgraph.json` path `./backend/pipeline.py:build_pipeline` is correct.
+- ✅ `tests/eval/draft_eval.py` exists with the `DraftEvaluator` class and `evaluate_draft()` method as described.
+- ✅ `tests/fixtures/companies.py` has 10 `CompanyFixture` entries — plenty to seed 5 examples from.
+- ✅ `.env.example` exists and currently has no LangSmith vars.
+- ✅ `pyproject.toml` has no `langsmith` dependency yet.
+- ✅ No `langgraph.json` exists yet.
+
+**Issue — `build_pipeline` takes an optional `checkpointer` arg:**
+The spec states (§3.2): *"build_pipeline() already matches the expected signature (takes no required args, returns a compiled graph)."* This is technically true — `checkpointer=None` means no required args. However, when LangGraph Studio calls `build_pipeline()` with no args, the function will default to `MemorySaver`. This is fine for Studio debugging but worth noting explicitly, since Studio won't have persistent checkpointing. The spec should acknowledge this is intentional and acceptable for local dev.
+
+### 3. Feasibility ✅ Good
+
+- LangSmith tracing via env vars is indeed zero-code-change for LangGraph pipelines — this is correct and well-understood.
+- The `langsmith.evaluate()` API integration is feasible. The spec correctly describes the function signature and flow.
+- Scope is realistic for a single implementation cycle.
+
+### 4. Clarity — Minor Issues
+
+- **Contradictory graceful degradation logic** (mentioned above): §3.3 step 1 says "check if `LANGCHAIN_API_KEY` is set" but Open Questions says "use a `--langsmith` CLI flag." Resolve this before building.
+- **§3.3 step 4**: "Use `langsmith.evaluate()` to run the LLM-as-judge against each example" — but the "Key design decision" box says eval scores *pre-generated* drafts, not live runs. This is clear if you read both, but the step-by-step flow could be confusing to a builder. The target function in `evaluate()` should be explicitly described as "the judge LLM wrapper" not "the draft pipeline."
+- **Test scenario 1** (tracing smoke test) says "manual verification, not automated." This is fine for now, but the spec should note that this means F1 has no automated acceptance test — it relies on human verification against the LangSmith UI.
+
+### 5. Security Considerations
+
+- The spec correctly keeps `LANGCHAIN_API_KEY` in `.env.example` as a placeholder (not committed with a real value). Good.
+- No mention of whether LangSmith traces might contain PII or sensitive company data from signals. If the pipeline processes real company signals, those will appear in LangSmith traces. Worth a one-line note: "Ensure LangSmith project access is restricted to team members" or similar.
+
+### 6. Edge Cases
+
+- **What if `langsmith.evaluate()` fails mid-run** (network error, rate limit)? The spec doesn't describe error handling for the LangSmith upload path. Should it fail loudly, retry, or fall back to local JSON?
+- **What if the dataset already has examples** but the schema has changed (e.g., new fields added to seed examples in a future iteration)? The spec says "upload seed examples if the dataset is empty" but doesn't cover dataset versioning or schema evolution.
+
+---
+
+### Summary of Recommendations
+
+| # | Severity | Issue |
+|---|----------|-------|
+| 1 | **Medium** | Resolve the `--langsmith` flag vs. env-var-sniffing contradiction between §3.3 and Open Questions |
+| 2 | **Low** | Clarify whether `langsmith` goes in main `dependencies` or `dev`/`eval` optional dependencies |
+| 3 | **Low** | Note that `build_pipeline()` defaulting to `MemorySaver` in Studio is intentional |
+| 4 | **Low** | Add a one-liner about data sensitivity in LangSmith traces |
+| 5 | **Low** | Describe error handling for LangSmith API failures during eval upload |
+
+---
+
+```
+---
+VERDICT: COMMENT
+SUMMARY: Well-grounded spec with one ambiguity (flag vs env-var degradation) that should be resolved, plus minor gaps
+CONFIDENCE: HIGH
+---
+KEY_ISSUES:
+- Contradictory graceful degradation mechanism: §3.3 says env-var detection, Open Questions confirms --langsmith CLI flag. Pick one and update both sections.
+- langsmith dependency placement (main vs dev/eval extras) is unspecified — matters for production image size.
+- No error handling described for LangSmith API failures during eval dataset upload.
+```

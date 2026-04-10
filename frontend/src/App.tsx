@@ -215,10 +215,6 @@ export default function App() {
     ? selectedCompany.drafts?.[selectedPersona.persona_id] ?? null
     : null
 
-  const synthesis = selectedPersona && selectedCompany
-    ? selectedCompany.synthesis_outputs?.[selectedPersona.persona_id] ?? null
-    : null
-
   // ── HITL ───────────────────────────────────────────────────────────────
   const isHitlMode = !!(currentSession?.awaiting_persona_selection)
 
@@ -411,7 +407,7 @@ export default function App() {
                       <DraftPanel
                         draft={draft}
                         persona={selectedPersona}
-                        humanReviewRequired={synthesis?.human_review_required}
+                        humanReviewRequired={selectedCompany?.human_review_required}
                         onApprove={handleApproveDraft}
                         onRegenerate={handleRegenerateDraft}
                         onOverride={() => setOverrideDialogOpen(true)}

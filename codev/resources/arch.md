@@ -120,6 +120,15 @@ All state is TypedDict-based (not Pydantic models).
 | Tavily API | Tier 2 web signal search |
 | SQLite (aiosqlite) | Memory agent storage + session checkpointing |
 | Vite + React + Tailwind | Frontend build |
+| LangSmith (>=0.3, `eval` extras) | Distributed tracing + LLM-as-judge eval dataset (Spec 3) |
+| LangGraph Studio | Visual graph inspection via `langgraph dev` + `langgraph.json` (Spec 3) |
+
+## Observability (Spec 3)
+
+- **Tracing**: Enabled at runtime by setting `LANGCHAIN_TRACING_V2=true`, `LANGCHAIN_API_KEY`, and `LANGCHAIN_PROJECT`. LangChain's global callback system auto-traces every LLM call, LangGraph node, and HITL interrupt — no code changes in `backend/pipeline.py`. Env vars documented in `.env.example`, `backend/config/loader.py` (comment block), and `docs/observability.md`.
+- **Studio**: `langgraph.json` at repo root points `graphs` at `./backend/pipeline.py:build_pipeline`; `langgraph dev` loads it for visual inspection.
+- **Eval dataset**: `tests/eval/seed_examples.py` defines 5 inputs-only seed examples (company/signal/persona). `tests/eval/draft_eval.py --langsmith` creates or fetches the `signalforge-draft-quality` dataset on LangSmith, seeds it if empty, and runs `langsmith.aevaluate()` using the existing LLM-as-judge rubric (`DraftEvaluator`) as an async evaluator. `target_fn` is a sync closure that loads pre-generated drafts from disk by `company_name`. Offline mode (no flag) is unchanged.
+- **Key decision — use `aevaluate`, not `evaluate`**: `langsmith.evaluate()` runs evaluators in a thread pool; `ChatAnthropic`'s lru_cache'd `httpx.AsyncClient` is bound to the loop it was created on and crashes when invoked from worker-thread loops. Using `langsmith.aevaluate()` keeps everything on the main event loop.
 
 ## Configuration
 

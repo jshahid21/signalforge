@@ -1,0 +1,32 @@
+id: '3'
+title: wire-langsmith-tracing-langgra
+protocol: spir
+phase: complete
+plan_phases:
+  - id: phase-1
+    status: complete
+  - id: phase-2
+    status: complete
+  - id: phase-3
+    status: complete
+  - id: phase-4
+    status: complete
+current_plan_phase: null
+gates:
+  spec-approval:
+    status: approved
+    requested_at: '2026-04-10T21:01:17.931Z'
+    approved_at: '2026-04-10T21:01:40.217Z'
+  plan-approval:
+    status: approved
+    requested_at: '2026-04-10T21:55:00.564Z'
+    approved_at: '2026-04-10T21:55:26.919Z'
+  pr:
+    status: approved
+    requested_at: '2026-04-10T23:33:59.195Z'
+    approved_at: '2026-04-10T23:41:56.111Z'
+iteration: 1
+build_complete: false
+history: []
+started_at: '2026-04-10T20:49:35.994Z'
+updated_at: '2026-04-10T23:42:08.158Z'

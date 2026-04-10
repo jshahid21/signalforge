@@ -250,6 +250,115 @@ def _print_report(report: dict) -> None:
     print("=" * 60)
 
 
+LANGSMITH_DATASET_NAME = "signalforge-draft-quality"
+
+
+def _ensure_langsmith_dataset(client: Any) -> bool:
+    """Create or fetch the LangSmith dataset. Returns True if dataset is ready.
+
+    Seeds the dataset with examples from seed_examples.py if it is empty.
+    Falls back gracefully on any error.
+    """
+    from tests.eval.seed_examples import SEED_EXAMPLES
+
+    try:
+        try:
+            dataset = client.read_dataset(dataset_name=LANGSMITH_DATASET_NAME)
+            print(f"[eval] Using existing LangSmith dataset: {LANGSMITH_DATASET_NAME}")
+        except Exception:
+            dataset = client.create_dataset(
+                LANGSMITH_DATASET_NAME,
+                description="SignalForge draft quality evaluation dataset",
+            )
+            print(f"[eval] Created LangSmith dataset: {LANGSMITH_DATASET_NAME}")
+
+        # Seed only if dataset is empty
+        existing = list(client.list_examples(dataset_name=LANGSMITH_DATASET_NAME))
+        if not existing:
+            print(f"[eval] Seeding dataset with {len(SEED_EXAMPLES)} examples...")
+            for example in SEED_EXAMPLES:
+                client.create_example(
+                    inputs=example,
+                    dataset_name=LANGSMITH_DATASET_NAME,
+                )
+            print(f"[eval] Seeded {len(SEED_EXAMPLES)} examples.")
+        else:
+            print(f"[eval] Dataset already has {len(existing)} example(s); skipping seed.")
+
+        return True
+
+    except Exception as exc:
+        print(
+            f"[eval] WARNING: LangSmith dataset setup failed ({exc}). "
+            "Falling back to local JSON-only mode.",
+            file=sys.stderr,
+        )
+        return False
+
+
+async def _run_langsmith_evaluation(
+    client: Any,
+    draft_results: list[dict],
+    evaluator: "DraftEvaluator",
+) -> None:
+    """Run langsmith.aevaluate() and log scores. Exits non-zero on failure.
+
+    Uses the native async runner so the async judge callable executes on the
+    current event loop — avoids nesting asyncio.run() inside a running loop
+    and avoids thread-pool event-loop issues with cached httpx clients.
+    """
+    import langsmith
+
+    # Build lookup dict: company_name → draft result
+    draft_by_company: dict[str, dict] = {
+        r["company_name"]: r for r in draft_results if "company_name" in r
+    }
+
+    def target_fn(inputs: dict) -> dict:
+        """Sync disk loader — looks up pre-generated draft from fixture results."""
+        company = inputs.get("company_name", "")
+        result = draft_by_company.get(company)
+        if result is None:
+            print(f"[eval] WARNING: No draft found for company {company!r}", file=sys.stderr)
+            return {"subject_line": "", "body": ""}
+        return {
+            "subject_line": result.get("subject_line", ""),
+            "body": result.get("body", ""),
+        }
+
+    async def judge_evaluator(run: Any, example: Any) -> dict:
+        """Async judge callable — runs on the current event loop."""
+        inputs = example.inputs
+        outputs = run.outputs or {}
+        scores = await evaluator.evaluate_draft(
+            company_name=inputs.get("company_name", ""),
+            signal_summary=inputs.get("signal_summary", ""),
+            persona_title=inputs.get("persona_title", ""),
+            role_type=inputs.get("role_type", "technical_buyer"),
+            subject_line=outputs.get("subject_line", ""),
+            body=outputs.get("body", ""),
+        )
+        result: dict = {}
+        for dim in ("technical_credibility", "tone_adherence", "no_generic_phrases"):
+            if dim in scores and isinstance(scores[dim], (int, float)):
+                result[dim] = scores[dim]
+        return result
+
+    try:
+        print(f"[eval] Running langsmith.aevaluate() against dataset: {LANGSMITH_DATASET_NAME}")
+        await langsmith.aevaluate(
+            target_fn,
+            data=LANGSMITH_DATASET_NAME,
+            evaluators=[judge_evaluator],
+            client=client,
+            experiment_prefix="draft-quality",
+        )
+        print("[eval] LangSmith evaluation complete. Scores logged to experiment.")
+    except Exception as exc:
+        print(f"[eval] ERROR: langsmith.aevaluate() failed: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+
 async def _main(args: argparse.Namespace) -> None:
     import asyncio
 
@@ -264,7 +373,7 @@ async def _main(args: argparse.Namespace) -> None:
     evaluator = DraftEvaluator(llm_model=args.model)
     report = await evaluator.evaluate_all(draft_results)
 
-    # Save report
+    # Save local JSON report (always, regardless of --langsmith flag)
     output_dir = Path("tests/eval/results")
     output_dir.mkdir(parents=True, exist_ok=True)
     ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
@@ -274,6 +383,22 @@ async def _main(args: argparse.Namespace) -> None:
     print(f"[eval] Report saved to: {output_path}")
 
     _print_report(report)
+
+    # LangSmith evaluation (optional — requires --langsmith flag + LANGCHAIN_API_KEY)
+    if args.langsmith:
+        api_key = os.environ.get("LANGCHAIN_API_KEY", "").strip()
+        if not api_key:
+            print(
+                "[eval] ERROR: --langsmith requires LANGCHAIN_API_KEY to be set.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+        from langsmith import Client
+        client = Client()
+        dataset_ready = _ensure_langsmith_dataset(client)
+        if dataset_ready:
+            await _run_langsmith_evaluation(client, draft_results, evaluator)
 
     if not report["overall_pass"]:
         sys.exit(1)
@@ -292,6 +417,15 @@ if __name__ == "__main__":
         "--model",
         default="claude-sonnet-4-6",
         help="Claude model to use as judge",
+    )
+    parser.add_argument(
+        "--langsmith",
+        action="store_true",
+        default=False,
+        help=(
+            "Upload results to LangSmith. Requires LANGCHAIN_API_KEY env var. "
+            "Creates/fetches the signalforge-draft-quality dataset and logs scores."
+        ),
     )
     args = parser.parse_args()
     asyncio.run(_main(args))

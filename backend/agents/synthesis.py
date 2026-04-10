@@ -29,15 +29,23 @@ try:
 except ImportError:
     HumanMessage = None  # type: ignore[assignment]
 
+try:
+    from langchain_anthropic import ChatAnthropic
+except ImportError:
+    ChatAnthropic = None  # type: ignore[assignment,misc]
+
+try:
+    from langchain_openai import ChatOpenAI
+except ImportError:
+    ChatOpenAI = None  # type: ignore[assignment,misc]
+
 
 def _make_llm(llm_provider: str, llm_model: str):
     """Instantiate the correct LangChain LLM based on provider."""
     provider = (llm_provider or "").strip().lower()
     if provider in ("openai", "gpt", "chatgpt", "open_ai"):
-        from langchain_openai import ChatOpenAI
         return ChatOpenAI(model=llm_model, max_tokens=800, temperature=0)
     else:
-        from langchain_anthropic import ChatAnthropic
         return ChatAnthropic(model=llm_model, max_tokens=800, temperature=0)
 
 

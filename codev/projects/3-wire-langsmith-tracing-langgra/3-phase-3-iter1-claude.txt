@@ -1,0 +1,24 @@
+I'll start by reading the plan and spec to understand phase-3's scope, then review the implementation files.Phase 3 is "Dependency Update" — very narrow scope: add `langsmith>=0.3` to `[project.optional-dependencies] eval` in `pyproject.toml`. Let me verify.The file I read doesn't show an `eval` optional-dependencies group. Let me check the git diff for pyproject.toml to understand what was actually changed.The worktree has the correct change. The `eval` optional-dependencies group with `langsmith>=0.3` is present. Phase 3's deliverable is simple and complete.
+
+Let me verify there are no other files that were supposed to change in phase 3:
+
+Looking back at the plan:
+
+> **Phase 3: Dependency Update**
+> - **Objective**: Add `langsmith>=0.3` to the `eval` optional-dependencies group in `pyproject.toml`.
+> - **Files**: `pyproject.toml` — add `eval` key to existing `[project.optional-dependencies]` section with `langsmith>=0.3`
+> - **Success Criteria**: `pyproject.toml` has `[project.optional-dependencies]` section with an `eval` key containing `langsmith>=0.3`; `pip install signalforge[eval]` would install langsmith
+> - **Tests**: None needed beyond file inspection
+
+✅ **`pyproject.toml`** — `eval = ["langsmith>=0.3"]` added under `[project.optional-dependencies]` — exactly as specified.
+
+The commit message confirms this is scoped correctly: `[Spec 3][Phase: implement] phase-3: add langsmith>=0.3 to eval optional-deps`.
+
+---
+VERDICT: APPROVE
+SUMMARY: Phase 3 correctly adds `langsmith>=0.3` to the `eval` optional-dependencies group in `pyproject.toml`, matching the plan exactly.
+CONFIDENCE: HIGH
+---
+
+KEY_ISSUES:
+- None
