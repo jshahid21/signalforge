@@ -1,0 +1,39 @@
+**Review scope**: Phase 4 only (LangSmith eval integration). I read all listed files; non‑phase‑4 changes are out of scope for this review.
+
+**Findings (ordered by severity)**
+
+1. **LangSmith eval will likely crash due to nested event loop**
+   - `tests/eval/draft_eval.py` — `judge_evaluator()` calls `asyncio.run(...)` while `_main()` is already running under `asyncio.run`. If `langsmith.evaluate()` invokes `judge_evaluator` in the same thread (the common case), this raises `RuntimeError: asyncio.run() cannot be called from a running event loop` and the `--langsmith` path fails.  
+   - This breaks a core Phase‑4 requirement (`--langsmith` integration).  
+   - Fix options:
+     - Make the evaluator fully sync (e.g., add a sync `evaluate_draft_sync()` that uses the LLM client synchronously).
+     - Or run the async call in a separate thread: `scores = asyncio.run(...)` inside `asyncio.to_thread(...)` or a dedicated `threading.Thread` so it doesn’t share the running loop.
+
+**Spec/Plan alignment (Phase‑4)**
+
+- Seed examples: Exactly 5, required fields present, no draft content. Good. (`tests/eval/seed_examples.py`, `tests/eval/test_seed_examples.py`)
+- `--langsmith` flag with lazy import, API key check, dataset create/fetch, seed‑only‑if‑empty, error handling, and fallback behavior are all present. Good.
+- Offline mode remains default; local JSON report is still generated. Good.
+
+**Tests**
+
+- `tests/eval/test_seed_examples.py` covers seed example structure per plan.  
+- No tests for LangSmith path (expected per plan).
+
+**Error handling**
+
+- Dataset setup failure falls back with warning. Good.
+- `langsmith.evaluate()` failure exits non‑zero. Good.
+- Missing `LANGCHAIN_API_KEY` with `--langsmith` exits non‑zero with clear error. Good.
+
+---
+
+VERDICT: REQUEST_CHANGES  
+SUMMARY: LangSmith eval path likely fails due to `asyncio.run()` inside a running event loop; fix is required for Phase‑4 deliverable.  
+CONFIDENCE: HIGH  
+
+---
+
+KEY_ISSUES: [LangSmith `--langsmith` evaluation likely crashes due to `asyncio.run()` inside running event loop in `tests/eval/draft_eval.py`.]
+
+If you want, I can propose a minimal patch that keeps the spec’s “async evaluator wrapped via `asyncio.run`” while avoiding the running‑loop crash.

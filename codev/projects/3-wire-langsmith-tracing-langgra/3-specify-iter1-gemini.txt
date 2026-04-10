@@ -1,0 +1,12 @@
+This is a solid specification for adding observability and evaluation tracking to the pipeline, but it has a fundamental misunderstanding of how LangSmith Datasets and `langsmith.evaluate()` work together, which will result in a broken evaluation harness if implemented as written.
+
+---
+VERDICT: REQUEST_CHANGES
+SUMMARY: The spec misuses LangSmith Datasets by storing actual drafts in the dataset examples, which will result in evaluating the exact same static drafts every time instead of tracking pipeline changes.
+CONFIDENCE: HIGH
+---
+
+KEY_ISSUES:
+- **Incorrect LangSmith Evaluation Architecture**: The spec states the dataset examples should store `outputs: {subject_line, body} (the draft to evaluate)`. This hardcodes the drafts into the test dataset. In LangSmith, datasets store test cases (the `inputs`). To evaluate newly generated drafts from JSON files, the dataset should only store `inputs` (company/persona context). The `target_fn` passed to `langsmith.evaluate()` should be a wrapper function that looks up the newly generated draft from the local JSON files based on `inputs["company_name"]` and returns it. The judge LLM is then implemented as a LangSmith *Evaluator* that scores the `target_fn`'s output and logs the metrics. If drafts are stored in the dataset `outputs`, the harness will just re-score the exact same 5 static drafts forever instead of evaluating the new JSON outputs of your pipeline.
+- **Seed Examples Contradiction**: Section 3.4 asks for 5 seed examples covering "both passing and borderline draft quality." Because the dataset should only contain test *inputs* (not the pre-generated drafts), it cannot dictate the quality of the draft. The seed examples should simply provide 5 diverse input scenarios (companies, signals, personas). Draft quality is entirely determined by what the pipeline outputs into the JSON files.
+- **Clarify `target_fn` in Eval**: The spec says "The evaluate() call wraps the judge LLM, not the full pipeline." This terminology is confusing for a builder. It should clarify that `langsmith.evaluate()` takes a dummy `target_fn` (which simply loads the pre-generated drafts from disk) and uses the judge LLM as the *evaluator* (which scores the output of the `target_fn`).

@@ -1,0 +1,10 @@
+---
+VERDICT: REQUEST_CHANGES
+SUMMARY: Critical event-loop caching bug due to LangSmith thread pool + `asyncio.run()`, plus an unused parameter issue.
+CONFIDENCE: HIGH
+---
+
+KEY_ISSUES:
+- `tests/eval/draft_eval.py`: The spec suggested wrapping the async evaluator via `asyncio.run()` to adapt it for the sync `langsmith.evaluate()`. However, `langsmith.evaluate()` runs evaluators concurrently using a thread pool, meaning each thread creates a new, isolated event loop. Because `ChatAnthropic` uses a global `@lru_cache` for its underlying `httpx.AsyncClient`, the client gets initialized and bound to the main event loop during the initial `evaluate_all()` run. When the evaluation threads attempt to use this cached client on their own thread-specific event loops, HTTPX will crash with `RuntimeError: Task attached to a different loop`. 
+  **Fix**: Ignore the spec's instruction to use `asyncio.run()`. Instead, switch to `langsmith.aevaluate()` (LangSmith's native async evaluation runner). Make `target_fn` and `judge_evaluator` native `async def` functions so they can run concurrently on the main event loop without thread-pool complications.
+- `tests/eval/draft_eval.py`: The function `_ensure_langsmith_dataset` defines a parameter `draft_results_by_company: dict[str, dict]` which is completely unused in the function body. Furthermore, when it is called in `_main`, it is passed `draft_results` (which is a `list[dict]`), creating a type mismatch. Either remove the unused parameter entirely, or correct the type hint and usage.
