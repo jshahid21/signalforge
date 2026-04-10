@@ -288,6 +288,48 @@ class TestRunDraftsForCompany:
         assert cost == 0.0
 
     @pytest.mark.asyncio
+    async def test_parallel_drafts_respect_session_budget(self) -> None:
+        """Regression for issue #8 bug 3: parallel drafts must not exceed
+        the session budget by dispatching N concurrent LLM calls against the
+        same snapshot of current_total_cost.
+
+        Five personas, budget for only ~2 drafts. The implementation must cap
+        the number of concurrent drafts so the total draft cost never exceeds
+        what the budget could afford.
+        """
+        from backend.agents.draft import _LLM_COST
+
+        persona_ids = [f"p{i}" for i in range(1, 6)]
+        personas = [_make_persona(pid) for pid in persona_ids]
+        cs = _make_company_state(confidence_score=80, selected_persona_ids=persona_ids)
+        cs = dict(cs)
+        cs["generated_personas"] = personas
+        cs["synthesis_outputs"] = {pid: _make_synthesis(pid) for pid in persona_ids}
+
+        # Budget for exactly 2 drafts (+ a tiny buffer to avoid float edge cases)
+        max_budget = 2 * _LLM_COST + 1e-9
+        current_total = 0.0
+
+        with patch("backend.agents.draft.ChatAnthropic") as MockLLM:
+            mock_response = MagicMock()
+            mock_response.content = _DRAFT_MOCK_RESPONSE
+            MockLLM.return_value.ainvoke = AsyncMock(return_value=mock_response)
+
+            updated_cs, total_cost = await run_drafts_for_company(
+                cs=cs,  # type: ignore[arg-type]
+                seller_profile=None,
+                llm_provider="anthropic",
+                llm_model="claude-sonnet-4-6",
+                current_total_cost=current_total,
+                max_budget_usd=max_budget,
+            )
+
+        # Must never exceed the session budget
+        assert current_total + total_cost <= max_budget + 1e-9
+        # Must draft at most floor(budget / _LLM_COST) = 2 personas
+        assert len(updated_cs["drafts"]) <= 2
+
+    @pytest.mark.asyncio
     @pytest.mark.skip(reason="FLAKY: drafted_under_override is False despite override=True; skipped pending investigation")  # noqa: E501
     async def test_override_tags_drafted_under_override(self) -> None:
         """override_requested=True + confidence < 60 → drafted_under_override=True."""

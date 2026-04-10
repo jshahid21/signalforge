@@ -224,11 +224,18 @@ class TestRunSignalIngestion:
         mock_tavily.search.assert_not_called()
 
     @pytest.mark.asyncio
-    @pytest.mark.skip(reason="FLAKY: Tavily called 3 times instead of 1 — tier-2 trigger logic changed; skipped pending investigation")  # noqa: E501
     async def test_tier_2_called_when_density_insufficient(
         self, mock_tavily: AsyncMock
     ) -> None:
-        # Only 1 matching job → density < 3 → Tier 2 triggered
+        # Only 1 matching job → density < 3 → Tier 2 triggered.
+        # run_tier_2 issues 3 parallel Tavily queries and cost accounting must
+        # charge 3x _TIER_2_COST_PER_CALL (regression guard for issue #8 bug 2).
+        from backend.agents.signal_ingestion import (
+            _TIER_1_COST_PER_CALL,
+            _TIER_2_COST_PER_CALL,
+            _TIER_2_QUERIES_PER_CALL,
+        )
+
         jsearch_low = AsyncMock()
         jsearch_low.search_jobs.return_value = [
             {
@@ -241,7 +248,7 @@ class TestRunSignalIngestion:
         cs = _make_company_state("stripe")
         cap_map = _make_mock_capability_map(["kubernetes"])
 
-        updated_cs, _ = await run_signal_ingestion(
+        updated_cs, cost = await run_signal_ingestion(
             cs=cs,
             capability_map=cap_map,
             current_total_cost=0.0,
@@ -250,7 +257,14 @@ class TestRunSignalIngestion:
             tavily_client=mock_tavily,
         )
 
-        mock_tavily.search.assert_called_once()
+        assert mock_tavily.search.call_count == _TIER_2_QUERIES_PER_CALL
+        # Cost must account for all 3 parallel queries, not just 1.
+        expected = (
+            _TIER_1_COST_PER_CALL
+            + _TIER_2_QUERIES_PER_CALL * _TIER_2_COST_PER_CALL
+        )
+        assert cost == pytest.approx(expected)
+        assert updated_cs["cost_metadata"]["tier_2_calls"] == _TIER_2_QUERIES_PER_CALL
 
     @pytest.mark.asyncio
     async def test_budget_exceeded_marks_failed(

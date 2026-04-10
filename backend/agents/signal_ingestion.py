@@ -42,6 +42,10 @@ _TIER_1_COST_PER_CALL = 0.001
 _TIER_2_COST_PER_CALL = 0.005
 _TIER_3_COST_PER_CALL = 0.02
 
+# Number of parallel Tavily queries issued per Tier 2 invocation.
+# Keep in sync with the query list in run_tier_2().
+_TIER_2_QUERIES_PER_CALL = 3
+
 # Threshold below which Tier 2 is triggered
 _TIER_1_DENSITY_THRESHOLD = 3
 
@@ -319,7 +323,8 @@ async def run_signal_ingestion(
     )
     if should_t2:
         budget_remaining = max_budget_usd - (current_total_cost + cost_incurred)
-        if budget_remaining < _TIER_2_COST_PER_CALL:
+        tier_2_total_cost = _TIER_2_QUERIES_PER_CALL * _TIER_2_COST_PER_CALL
+        if budget_remaining < tier_2_total_cost:
             # Budget insufficient for Tier 2 → mark FAILED (spec §5.2)
             cs["status"] = PipelineStatus.FAILED  # type: ignore[index]
             cs["errors"] = list(cs.get("errors", [])) + [  # type: ignore[index]
@@ -337,8 +342,10 @@ async def run_signal_ingestion(
             try:
                 tier_2_signals = await run_tier_2(company_name, tavily_client)
                 all_signals.extend(tier_2_signals)
-                cost_incurred += _TIER_2_COST_PER_CALL
-                tier_2_calls = 1
+                # run_tier_2 issues _TIER_2_QUERIES_PER_CALL parallel queries,
+                # so charge once per query (not once per Tier 2 invocation).
+                cost_incurred += tier_2_total_cost
+                tier_2_calls = _TIER_2_QUERIES_PER_CALL
                 escalation_reasons[-1] += f" tier_2_signals={len(tier_2_signals)}"
             except Exception as exc:
                 cs["errors"] = list(cs.get("errors", [])) + [  # type: ignore[index]

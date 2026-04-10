@@ -407,46 +407,23 @@ class TestConnectionManager:
 
 
 class TestSessionResume:
-    async def test_resume_unknown_session_returns_404(self, client) -> None:
+    """Resume-after-restart was removed in issue #8 bug 1 — the checkpointer
+    is an in-process MemorySaver and cannot rehydrate state across process
+    restarts. The endpoint now returns HTTP 410 Gone for every input."""
+
+    async def test_resume_endpoint_returns_410_gone(self, client) -> None:
         resp = await client.post("/sessions/nonexistent/resume")
-        assert resp.status_code == 404
+        assert resp.status_code == 410
+        assert "no longer supported" in resp.json()["detail"].lower()
 
-    async def test_resume_completed_session_returns_409(self, client) -> None:
+    async def test_resume_endpoint_returns_410_for_existing_session(self, client) -> None:
         from backend.api.session_store import create_session_record, update_session_record
 
-        create_session_record("s-done", ["A"], {})
-        update_session_record("s-done", "completed")
+        create_session_record("s-any", ["A"], {})
+        update_session_record("s-any", "awaiting_human")
 
-        resp = await client.post("/sessions/s-done/resume")
-        assert resp.status_code == 409
-
-    async def test_resume_failed_session_starts_background_task(self, client, monkeypatch) -> None:
-        from backend.api.session_store import create_session_record, update_session_record
-        from unittest.mock import AsyncMock, MagicMock, patch
-
-        create_session_record("s-fail", ["A"], {})
-        update_session_record("s-fail", "failed")
-
-        mock_checkpointer = MagicMock()
-        mock_checkpointer.__aenter__ = AsyncMock(return_value=mock_checkpointer)
-        mock_checkpointer.__aexit__ = AsyncMock(return_value=None)
-
-        mock_graph = MagicMock()
-
-        async def _empty_astream(*args, **kwargs):
-            return
-            yield  # make it an async generator
-
-        mock_graph.astream = _empty_astream
-
-        with patch("langgraph.checkpoint.sqlite.aio.AsyncSqliteSaver.from_conn_string",
-                   return_value=mock_checkpointer), \
-             patch("backend.pipeline.build_pipeline", return_value=mock_graph):
-            resp = await client.post("/sessions/s-fail/resume")
-
-        assert resp.status_code == 202
-        data = resp.json()
-        assert data["session_id"] == "s-fail"
+        resp = await client.post("/sessions/s-any/resume")
+        assert resp.status_code == 410
 
 
 # ---------------------------------------------------------------------------
@@ -506,6 +483,149 @@ class TestPersonaEdit:
             json={"title": "CTO"},
         )
         assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Persona confirm endpoint (HITL out-of-graph synthesis/draft)
+# ---------------------------------------------------------------------------
+
+
+class TestPersonaConfirmFailurePropagation:
+    """Regression tests for issue #8 bug 4: session status must reflect
+    per-company synthesis/draft outcomes, not unconditionally mark 'completed'.
+    """
+
+    def _setup_awaiting_session(self, session_id: str, company_ids: list[str]) -> None:
+        from backend.api.session_store import (
+            ActiveSession,
+            create_session_record,
+            register_session,
+        )
+
+        create_session_record(session_id, company_ids, {})
+        states = {
+            cid: {
+                "company_id": cid,
+                "company_name": cid.capitalize(),
+                "current_stage": "awaiting_persona_selection",
+                "generated_personas": [
+                    {
+                        "persona_id": "p1",
+                        "title": "VP Eng",
+                        "targeting_reason": "owns platform",
+                        "role_type": "technical_buyer",
+                        "seniority_level": "vp",
+                        "priority_score": 0.9,
+                        "is_custom": False,
+                        "is_edited": False,
+                    }
+                ],
+                "selected_personas": [],
+                "drafts": {},
+            }
+            for cid in company_ids
+        }
+        active = ActiveSession(session_id=session_id)
+        active.last_state = {"company_states": states, "total_cost_usd": 0.0}
+        active.awaiting_persona_selection = True
+        register_session(active)
+
+    async def test_all_companies_fail_marks_session_failed(
+        self, client, monkeypatch
+    ) -> None:
+        from unittest.mock import AsyncMock
+
+        from backend.api import session_store
+        from backend.models.enums import PipelineStatus
+
+        self._setup_awaiting_session("sess-fail-all", ["acme"])
+
+        async def _fake_synth(cs, **kwargs):
+            cs = dict(cs)
+            cs["status"] = PipelineStatus.FAILED
+            return cs, 0.0
+
+        async def _fake_draft(cs, **kwargs):
+            return cs, 0.0
+
+        monkeypatch.setattr("backend.agents.synthesis.run_synthesis", _fake_synth)
+        monkeypatch.setattr(
+            "backend.agents.draft.run_drafts_for_company", _fake_draft
+        )
+        monkeypatch.setattr(
+            "backend.agents.memory_agent.get_few_shot_examples", lambda limit=2: []
+        )
+
+        resp = await client.post(
+            "/sessions/sess-fail-all/companies/acme/personas/confirm",
+            json={"selected_persona_ids": ["p1"]},
+        )
+        assert resp.status_code == 202
+
+        # Wait for the background synthesis task to finish
+        active = session_store.get_active_session("sess-fail-all")
+        assert active is not None and active.task is not None
+        await active.task
+
+        rec = session_store.get_session_record("sess-fail-all")
+        assert rec is not None
+        assert rec["status"] == "failed"
+        assert rec["error_message"] is not None
+
+    async def test_partial_failure_marks_session_partial(
+        self, client, monkeypatch
+    ) -> None:
+        from unittest.mock import AsyncMock
+
+        from backend.api import session_store
+        from backend.models.enums import PipelineStatus
+
+        self._setup_awaiting_session("sess-partial", ["acme", "globex"])
+
+        # Confirm acme first — it's fine; not yet all companies confirmed
+        resp1 = await client.post(
+            "/sessions/sess-partial/companies/acme/personas/confirm",
+            json={"selected_persona_ids": ["p1"]},
+        )
+        assert resp1.status_code == 202
+
+        async def _fake_synth(cs, **kwargs):
+            cs = dict(cs)
+            # acme succeeds, globex fails
+            if cs.get("company_id") == "globex":
+                cs["status"] = PipelineStatus.FAILED
+            else:
+                cs["status"] = PipelineStatus.RUNNING
+                cs["current_stage"] = "draft"
+            return cs, 0.0
+
+        async def _fake_draft(cs, **kwargs):
+            cs = dict(cs)
+            cs["drafts"] = {"p1": {"draft_id": "d1"}}
+            return cs, 0.0
+
+        monkeypatch.setattr("backend.agents.synthesis.run_synthesis", _fake_synth)
+        monkeypatch.setattr(
+            "backend.agents.draft.run_drafts_for_company", _fake_draft
+        )
+        monkeypatch.setattr(
+            "backend.agents.memory_agent.get_few_shot_examples", lambda limit=2: []
+        )
+
+        resp2 = await client.post(
+            "/sessions/sess-partial/companies/globex/personas/confirm",
+            json={"selected_persona_ids": ["p1"]},
+        )
+        assert resp2.status_code == 202
+
+        active = session_store.get_active_session("sess-partial")
+        assert active is not None and active.task is not None
+        await active.task
+
+        rec = session_store.get_session_record("sess-partial")
+        assert rec is not None
+        assert rec["status"] == "partial"
+        assert "globex" in (rec["error_message"] or "")
 
 
 # ---------------------------------------------------------------------------

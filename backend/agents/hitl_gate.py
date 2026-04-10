@@ -1,22 +1,23 @@
 """HITL (Human-in-the-Loop) gate for persona selection (spec §5.7, §6.2).
 
-This is a pipeline interrupt node — not an AI agent.
-Pipeline pauses here until the user confirms persona selection via the API.
+This is a pipeline signalling node — not an AI agent. When companies require
+persona selection, the graph exits through this node and the application layer
+(the `/sessions/.../personas/confirm` endpoint) drives synthesis/draft outside
+LangGraph. The graph itself does NOT call `interrupt()` anymore — LangGraph's
+checkpointer could not serialize the Send objects dispatched on resume, so the
+HITL pause was moved out of the graph entirely.
 
-LangGraph interrupt() usage:
-    - Node calls interrupt(value) to pause execution
-    - Graph resumes when .invoke() called again with Command(resume=selected_personas)
-    - Requires graph compiled with a MemorySaver checkpointer
-
-State transitions:
-    Before interrupt: awaiting_persona_selection = True
-    After resume:     selected_personas populated, awaiting_persona_selection = False
-
-HITL flow in graph:
+Flow:
     company_pipeline [fan-out] → hitl_gate → END
-    company_pipeline returns AWAITING_HUMAN when personas need selection.
-    hitl_gate detects these, calls interrupt(), and on resume dispatches
-    synthesis-only company_pipeline runs via Command(send=[Send(...)]).
+    company_pipeline sets current_stage="awaiting_persona_selection" for each
+    company that needs a persona pick.
+    hitl_gate_node collects those company IDs and returns the
+    awaiting_persona_selection flag so the caller can broadcast the HITL
+    required event over WebSocket and return control to the user.
+
+    The `/personas/confirm` endpoint later calls `apply_persona_selection`
+    on each company state and invokes `run_synthesis` + `run_drafts_for_company`
+    directly — no graph resume is involved.
 """
 from __future__ import annotations
 
@@ -27,8 +28,10 @@ from backend.models.state import AgentState, CompanyInput, CompanyState
 def run_persona_selection_gate(cs: CompanyState) -> CompanyState:
     """Mark the company as awaiting persona selection.
 
-    Called before the LangGraph interrupt(). Sets the state flag that the UI
-    uses to display the persona selection panel.
+    Called from `company_pipeline` when personas have been generated and need
+    human confirmation. Sets the state flag that the UI uses to display the
+    persona selection panel. The graph then exits via `hitl_gate_node`; resume
+    is performed out of graph by the `/personas/confirm` endpoint.
 
     Returns the updated company state.
     """
