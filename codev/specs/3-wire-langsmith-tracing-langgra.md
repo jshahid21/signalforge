@@ -43,12 +43,12 @@ Integrate the LangChain observability and tooling ecosystem into SignalForge's L
 2. `langgraph.json` descriptor pointing to `build_pipeline` in `backend/pipeline.py`.
 3. LangSmith SDK integration in `tests/eval/draft_eval.py`:
    - Create/fetch a named LangSmith dataset (`signalforge-draft-quality`).
-   - Upload example inputs (company context + persona context + expected output shape).
-   - Run evaluation using `langsmith.evaluate()` targeting the draft pipeline or a direct LLM judge call.
-   - Log scores (technical credibility, tone adherence, no generic phrases) as feedback to each run.
-4. A small set of seed dataset examples derived from the existing fixture companies in `tests/fixtures/companies.py`.
+   - Upload seed input examples (company context + persona context — no draft content in dataset).
+   - `target_fn` loads pre-generated drafts from local JSON files; evaluator wraps `DraftEvaluator.evaluate_draft()`.
+   - Log scores (technical credibility, tone adherence, no generic phrases) as numeric feedback per run.
+4. A small set of 5 seed dataset examples in `tests/eval/seed_examples.py` (inputs only — no drafts).
 5. Documentation in `.env.example` for the new env vars.
-6. Add `langsmith` to `pyproject.toml` dependencies.
+6. Add `langsmith>=0.3` to `pyproject.toml` `[project.optional-dependencies] eval` group (not main deps).
 
 ### Out of Scope
 
@@ -104,32 +104,50 @@ This file goes in the project root. No code changes to `backend/pipeline.py` are
 
 ### 3.3 LangSmith Evaluation Dataset Integration
 
-Modify `tests/eval/draft_eval.py` to optionally upload results to LangSmith using the `langsmith` SDK.
+Add a `--langsmith` flag to `tests/eval/draft_eval.py` to optionally upload results to LangSmith. Without the flag, the existing local JSON-only behavior is preserved. **The `--langsmith` flag is the authoritative trigger** — the presence of `LANGCHAIN_API_KEY` in the environment is a prerequisite but not itself a trigger.
 
 **Dataset structure:**
 - Dataset name: `signalforge-draft-quality`
-- Each example contains:
-  - **inputs**: `{company_name, signal_summary, persona_title, role_type}`
-  - **outputs**: `{subject_line, body}` (the draft to evaluate)
-- Examples are seeded from the fixture companies in `tests/fixtures/companies.py`.
+- Each example contains only **inputs**: `{company_name, signal_summary, persona_title, role_type}` — the context needed to look up the corresponding pre-generated draft.
+- No `outputs` are stored in the dataset. Outputs are determined dynamically by the `target_fn` at eval time.
+- Examples are seeded from 5 diverse input scenarios in `tests/eval/seed_examples.py`.
 
-**Evaluation flow:**
-1. Check if `LANGCHAIN_API_KEY` is set; if not, fall back to local JSON-only mode (existing behavior).
-2. Create or fetch the `signalforge-draft-quality` dataset in LangSmith.
-3. Upload seed examples if the dataset is empty.
-4. Use `langsmith.evaluate()` to run the LLM-as-judge against each example.
-5. The evaluator function calls `DraftEvaluator.evaluate_draft()` and returns scores as a dict.
-6. LangSmith automatically logs these as numeric feedback attached to each run in the dataset.
+**Evaluation architecture (`langsmith.evaluate()`):**
+LangSmith's `evaluate()` function takes:
+- `target_fn`: a callable that receives `inputs` dict and returns `outputs` dict.
+- `data`: the dataset name.
+- `evaluators`: list of evaluator callables, each receiving `(run, example)` and returning `{key: score}`.
+
+For SignalForge:
+- The **`target_fn`** is a wrapper that looks up the pre-generated draft from local JSON files using `inputs["company_name"]`. It returns `{subject_line, body}` (the draft text). This is NOT the full pipeline — it simply loads the corresponding draft from disk.
+- The **evaluator** wraps `DraftEvaluator.evaluate_draft()` and returns scores as `{technical_credibility: float, tone_adherence: float, no_generic_phrases: float}`.
+
+**Evaluation flow (with `--langsmith` flag):**
+1. Validate `LANGCHAIN_API_KEY` is set; error out with a clear message if missing.
+2. Load draft results from `--fixture-results-dir` (existing behavior).
+3. Create or fetch the `signalforge-draft-quality` dataset in LangSmith. If the dataset is empty, upload seed examples from `tests/eval/seed_examples.py`. If dataset already has examples, reuse them (no duplicate uploads).
+4. Call `langsmith.evaluate(target_fn, data="signalforge-draft-quality", evaluators=[judge_evaluator])`.
+5. LangSmith logs scores as numeric feedback for each run in the experiment view.
+6. Continue to save local JSON report (same as before).
+
+**Error handling:**
+- If LangSmith dataset creation fails: log the error and fall back to local JSON-only mode with a warning.
+- If `langsmith.evaluate()` raises mid-run: catch, log, exit non-zero so CI can detect the failure.
+- If the `target_fn` cannot find a draft for an input (company not in JSON files): return `{subject_line: "", body: ""}` and log a warning; the judge will score it 1/5 naturally.
 
 **Key design decision — no pipeline invocation in eval:**
-The eval harness scores pre-generated draft results (loaded from JSON files), not live pipeline runs. This keeps eval fast, deterministic for cost, and decoupled from live API keys. The `evaluate()` call wraps the judge LLM, not the full pipeline.
+The eval harness scores pre-generated draft results (loaded from JSON files), not live pipeline runs. This keeps eval fast, deterministic for cost, and decoupled from live API keys. The `target_fn` is a disk loader, not a pipeline invoker.
+
+**Data sensitivity note:**
+LangSmith traces may include company names, signal summaries, and draft content from the eval run. Ensure the LangSmith project access is restricted to team members with need-to-know. Do not use real customer data in seed examples — use synthetic fixture data only.
 
 ### 3.4 Seed Dataset Examples
 
-Create `tests/eval/seed_examples.py` with 5 representative examples covering:
-- Different company sizes and signal types (hiring spike, funding round, product launch).
+Create `tests/eval/seed_examples.py` with 5 representative input scenarios covering:
+- Different company sizes and signal types (hiring spike, funding round, product launch, job posting, tech blog post).
 - Different persona role types (`technical_buyer`, `economic_buyer`, `influencer`).
-- Both passing and borderline draft quality.
+
+Each example contains only `inputs` keys: `{company_name, signal_summary, persona_title, role_type}`. No draft content is stored here.
 
 ---
 
@@ -141,7 +159,9 @@ None — requirements are fully specified.
 
 ### Important
 
-- **LangSmith API key availability**: The eval integration must gracefully degrade when `LANGCHAIN_API_KEY` is absent. Confirmed: use a feature flag `--langsmith` CLI flag.
+- **LangSmith API key availability**: The eval integration requires `--langsmith` flag to enable. Without the flag, local-only mode is used. If `--langsmith` is passed without `LANGCHAIN_API_KEY`, the script errors out clearly.
+- **Dataset update strategy**: If the dataset already has examples, reuse them. Seed examples are only uploaded once (when dataset is empty). Schema changes require manually deleting the dataset in LangSmith UI.
+- **Studio uses MemorySaver**: When LangGraph Studio calls `build_pipeline()` with no args, it defaults to `MemorySaver` checkpointer. This is intentional and acceptable for local debugging — no persistent state across Studio restarts.
 
 ### Nice-to-Know
 
@@ -160,7 +180,7 @@ None — requirements are fully specified.
 | F2 | MUST | `langgraph.json` exists at project root and passes `langgraph dev` validation |
 | F3 | MUST | `python -m tests.eval.draft_eval --langsmith` uploads/fetches dataset and logs scores to LangSmith |
 | F4 | MUST | Eval harness still works offline (without `LANGCHAIN_API_KEY`) — existing behavior preserved |
-| F5 | MUST | `langsmith` added to `pyproject.toml` dependencies |
+| F5 | MUST | `langsmith>=0.3` added to `pyproject.toml` `[project.optional-dependencies] eval` group |
 | F6 | SHOULD | `.env.example` documents all four LangSmith env vars with descriptions |
 | F7 | SHOULD | At least 5 seed examples in `tests/eval/seed_examples.py` covering diverse signal/persona combos |
 | F8 | COULD | Brief `docs/observability.md` describing the tracing setup |
@@ -196,6 +216,7 @@ None — requirements are fully specified.
 
 ## Implementation Notes
 
-- The `langsmith.evaluate()` function signature: `evaluate(target_fn, data=dataset_name, evaluators=[...])`. The target function receives `inputs` dict and returns `outputs` dict. The evaluator receives `(run, example)` and returns `{key: value}` feedback.
-- LangSmith dataset examples require `inputs` and optionally `outputs`. We upload `inputs` with company/persona context; `outputs` with pre-generated drafts from fixture JSON files.
-- The `langgraph.json` `graphs` field maps to `module_path:factory_function`. LangGraph Studio calls `factory_function()` with no args to get the compiled graph.
+- The `langsmith.evaluate()` function signature: `evaluate(target_fn, data=dataset_name, evaluators=[...])`. The `target_fn` receives `inputs` dict and returns `outputs` dict. The evaluator receives `(run, example)` and returns `{key: score}` feedback. `target_fn` is NOT the pipeline — it's a disk loader that maps `inputs["company_name"]` to the pre-generated draft JSON.
+- LangSmith dataset examples contain only `inputs` (company/persona context). There are no `outputs` in the dataset. Outputs are produced dynamically by `target_fn` at evaluation time by loading from local JSON files.
+- The `langgraph.json` `graphs` field maps to `module_path:factory_function`. LangGraph Studio calls `factory_function()` with no args — `build_pipeline()` defaults to `MemorySaver` which is correct for local debugging.
+- `langsmith` SDK is only needed for the eval harness. Install via `pip install signalforge[eval]`.
