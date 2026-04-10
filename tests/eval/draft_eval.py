@@ -253,7 +253,7 @@ def _print_report(report: dict) -> None:
 LANGSMITH_DATASET_NAME = "signalforge-draft-quality"
 
 
-def _ensure_langsmith_dataset(client: Any, draft_results_by_company: dict[str, dict]) -> bool:
+def _ensure_langsmith_dataset(client: Any) -> bool:
     """Create or fetch the LangSmith dataset. Returns True if dataset is ready.
 
     Seeds the dataset with examples from seed_examples.py if it is empty.
@@ -296,13 +296,17 @@ def _ensure_langsmith_dataset(client: Any, draft_results_by_company: dict[str, d
         return False
 
 
-def _run_langsmith_evaluation(
+async def _run_langsmith_evaluation(
     client: Any,
     draft_results: list[dict],
     evaluator: "DraftEvaluator",
 ) -> None:
-    """Run langsmith.evaluate() and log scores. Exits non-zero on failure."""
-    import asyncio
+    """Run langsmith.aevaluate() and log scores. Exits non-zero on failure.
+
+    Uses the native async runner so the async judge callable executes on the
+    current event loop — avoids nesting asyncio.run() inside a running loop
+    and avoids thread-pool event-loop issues with cached httpx clients.
+    """
     import langsmith
 
     # Build lookup dict: company_name → draft result
@@ -322,19 +326,17 @@ def _run_langsmith_evaluation(
             "body": result.get("body", ""),
         }
 
-    def judge_evaluator(run: Any, example: Any) -> dict:
-        """Wrap async DraftEvaluator.evaluate_draft() in a sync context for langsmith."""
+    async def judge_evaluator(run: Any, example: Any) -> dict:
+        """Async judge callable — runs on the current event loop."""
         inputs = example.inputs
         outputs = run.outputs or {}
-        scores = asyncio.run(
-            evaluator.evaluate_draft(
-                company_name=inputs.get("company_name", ""),
-                signal_summary=inputs.get("signal_summary", ""),
-                persona_title=inputs.get("persona_title", ""),
-                role_type=inputs.get("role_type", "technical_buyer"),
-                subject_line=outputs.get("subject_line", ""),
-                body=outputs.get("body", ""),
-            )
+        scores = await evaluator.evaluate_draft(
+            company_name=inputs.get("company_name", ""),
+            signal_summary=inputs.get("signal_summary", ""),
+            persona_title=inputs.get("persona_title", ""),
+            role_type=inputs.get("role_type", "technical_buyer"),
+            subject_line=outputs.get("subject_line", ""),
+            body=outputs.get("body", ""),
         )
         result: dict = {}
         for dim in ("technical_credibility", "tone_adherence", "no_generic_phrases"):
@@ -343,8 +345,8 @@ def _run_langsmith_evaluation(
         return result
 
     try:
-        print(f"[eval] Running langsmith.evaluate() against dataset: {LANGSMITH_DATASET_NAME}")
-        langsmith.evaluate(
+        print(f"[eval] Running langsmith.aevaluate() against dataset: {LANGSMITH_DATASET_NAME}")
+        await langsmith.aevaluate(
             target_fn,
             data=LANGSMITH_DATASET_NAME,
             evaluators=[judge_evaluator],
@@ -353,7 +355,7 @@ def _run_langsmith_evaluation(
         )
         print("[eval] LangSmith evaluation complete. Scores logged to experiment.")
     except Exception as exc:
-        print(f"[eval] ERROR: langsmith.evaluate() failed: {exc}", file=sys.stderr)
+        print(f"[eval] ERROR: langsmith.aevaluate() failed: {exc}", file=sys.stderr)
         sys.exit(1)
 
 
@@ -394,9 +396,9 @@ async def _main(args: argparse.Namespace) -> None:
 
         from langsmith import Client
         client = Client()
-        dataset_ready = _ensure_langsmith_dataset(client, draft_results)
+        dataset_ready = _ensure_langsmith_dataset(client)
         if dataset_ready:
-            _run_langsmith_evaluation(client, draft_results, evaluator)
+            await _run_langsmith_evaluation(client, draft_results, evaluator)
 
     if not report["overall_pass"]:
         sys.exit(1)
