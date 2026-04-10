@@ -31,3 +31,4 @@ venv/
 # Frontend build
 frontend/dist/
 frontend/node_modules/
+.architect-role.md
