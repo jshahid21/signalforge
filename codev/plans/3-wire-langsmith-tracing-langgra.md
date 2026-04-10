@@ -27,13 +27,15 @@ No changes to core pipeline logic (`backend/pipeline.py`) are needed — LangCha
 
 ### Phase 1: Environment Config & Observability Docs
 
-- **Objective**: Document all LangSmith env vars in `.env.example` and create a brief `docs/observability.md` describing how to enable tracing.
+- **Objective**: Document all LangSmith env vars in `.env.example`, add a comment block to `backend/config/loader.py` noting these vars, and create `docs/observability.md`.
 - **Files**:
   - `.env.example` — add four LangSmith vars with descriptions
+  - `backend/config/loader.py` — add comment block documenting LangSmith vars (no enforcement)
   - `docs/observability.md` — new file describing tracing setup
 - **Dependencies**: None
 - **Success Criteria**:
   - `.env.example` has entries for `LANGCHAIN_TRACING_V2`, `LANGCHAIN_ENDPOINT`, `LANGCHAIN_API_KEY`, `LANGCHAIN_PROJECT`
+  - `backend/config/loader.py` has a comment referencing these vars and noting they are consumed by the LangChain runtime directly
   - `docs/observability.md` explains how to enable tracing and what gets traced
 - **Tests**: No automated tests needed for docs/config files
 
@@ -48,13 +50,13 @@ No changes to core pipeline logic (`backend/pipeline.py`) are needed — LangCha
   - `graphs` key points to `./backend/pipeline.py:build_pipeline`
   - `dependencies` is `["."]` (local editable package)
   - `env` is `".env"`
-- **Tests**: `langgraph dev --help` confirms the file is valid (manual smoke test)
+- **Tests**: Manual smoke test — run `langgraph dev` from project root and verify the graph loads without import errors
 
 ### Phase 3: Dependency Update
 
 - **Objective**: Add `langsmith>=0.3` to the `eval` optional-dependencies group in `pyproject.toml`.
 - **Files**:
-  - `pyproject.toml` — create `[project.optional-dependencies] eval` group with `langsmith>=0.3`
+  - `pyproject.toml` — add `eval` key to existing `[project.optional-dependencies]` section with `langsmith>=0.3`
 - **Dependencies**: None
 - **Success Criteria**:
   - `pyproject.toml` has `[project.optional-dependencies]` section with an `eval` key containing `langsmith>=0.3`
@@ -75,6 +77,11 @@ No changes to core pipeline logic (`backend/pipeline.py`) are needed — LangCha
   - `draft_eval.py` offline mode (no `--langsmith`) is unchanged
   - `draft_eval.py --langsmith` without `LANGCHAIN_API_KEY` exits non-zero with clear message
   - `draft_eval.py` imports `langsmith` lazily (only when `--langsmith` is passed)
+  - Dataset `signalforge-draft-quality` is created-or-fetched (not duplicated) via `langsmith.Client()`
+  - Seed examples uploaded only when dataset is empty; existing examples reused otherwise
+  - If dataset creation fails: log warning and fall back to local JSON-only mode
+  - If `langsmith.evaluate()` raises: catch, log, exit non-zero
+  - `target_fn` is sync (disk loader using pre-loaded `draft_results` dict); evaluator callable wraps async `evaluate_draft()` via `asyncio.run()`
 - **Tests**:
   - `pytest tests/eval/test_seed_examples.py` — validates seed example structure (no LLM required)
 
