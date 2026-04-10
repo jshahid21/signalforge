@@ -24,6 +24,7 @@ Integrate the LangChain observability and tooling ecosystem into SignalForge's L
 ### Desired State
 
 - Every pipeline execution (dev, staging, production) emits a trace to LangSmith automatically via `LANGCHAIN_TRACING_V2=true`.
+<!-- REVIEW(@architect): want to make sure we're using the latest version given llm knowledge cutoff -->
 - The `langgraph.json` file enables `langgraph dev` to launch Studio with the correct graph entrypoint.
 - Running the eval harness uploads a dataset to LangSmith and logs per-run scores so quality trends are visible in the LangSmith UI.
 
@@ -49,6 +50,7 @@ Integrate the LangChain observability and tooling ecosystem into SignalForge's L
 4. A small set of 5 seed dataset examples in `tests/eval/seed_examples.py` (inputs only — no drafts).
 5. Documentation in `.env.example` for the new env vars.
 6. Add `langsmith>=0.3` to `pyproject.toml` `[project.optional-dependencies] eval` group (not main deps).
+<!-- REVIEW(@architect): double check latest version, don't rely on llm bc of knowledge cutoff -->
 
 ### Out of Scope
 
@@ -207,7 +209,7 @@ None — requirements are fully specified.
 |------|--------|-------------|
 | `langgraph.json` | Create | Studio descriptor |
 | `.env.example` | Modify | Add LangSmith env vars |
-| `pyproject.toml` | Modify | Add `langsmith>=0.1` dependency |
+| `pyproject.toml` | Modify | Add `langsmith>=0.3` to `[project.optional-dependencies] eval` |
 | `tests/eval/draft_eval.py` | Modify | Add `--langsmith` flag and `evaluate()` integration |
 | `tests/eval/seed_examples.py` | Create | 5 seed dataset examples |
 | `tests/eval/test_seed_examples.py` | Create | Unit tests for seed examples |
