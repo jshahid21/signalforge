@@ -32,6 +32,9 @@ dev = [
     "httpx>=0.27",
     "ruff>=0.8",
 ]
+eval = [
+    "langsmith>=0.3",
+]
 
 [tool.setuptools.packages.find]
 where = ["."]
