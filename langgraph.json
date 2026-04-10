@@ -1,0 +1,7 @@
+{
+  "dependencies": ["."],
+  "graphs": {
+    "signalforge": "./backend/pipeline.py:build_pipeline"
+  },
+  "env": ".env"
+}
