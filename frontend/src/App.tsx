@@ -143,16 +143,24 @@ export default function App() {
 
     const unsub = wsManager.onEvent(event => {
       if (event.type === 'stage_update') {
-        updateCompanyState(event.company_id, {
-          current_stage: event.stage,
-          status: event.status as CompanyState['status'],
-        })
+        if (event.company_state) {
+          // Full company state included — merge directly, no round-trip needed
+          updateCompanyState(event.company_id, event.company_state)
+        } else {
+          updateCompanyState(event.company_id, {
+            current_stage: event.stage,
+            status: event.status as CompanyState['status'],
+          })
+        }
       } else if (event.type === 'budget_warning') {
         setToast(`Budget warning: ${event.pct_used}% of session budget used`)
         setTimeout(() => setToast(null), 6000)
       } else if (event.type === 'pipeline_complete' || event.type === 'hitl_required') {
-        // Refresh full session state
-        sessionsApi.get(sessionId).then(setCurrentSession).catch(() => {})
+        sessionsApi.get(sessionId).then(full => {
+          setCurrentSession(full)
+          // Refresh sessions list so sidebar status updates
+          sessionsApi.list().then(setSessions).catch(() => {})
+        }).catch(() => {})
       } else if (event.type === 'error') {
         setToast(`Error: ${event.message}`)
         setTimeout(() => setToast(null), 8000)
@@ -165,14 +173,24 @@ export default function App() {
     const session = await sessionsApi.create(companyNames)
     const sessionList = await sessionsApi.list()
     setSessions(sessionList)
-    setCurrentSession(session)
+    // Fetch full session to get company_states with company_name populated
+    const full = await sessionsApi.get(session.session_id)
+    setCurrentSession(full)
     connectWebSocket(session.session_id)
   }
 
   async function selectSession(sessionId: string) {
-    const full = await sessionsApi.get(sessionId)
-    setCurrentSession(full)
+    // Show immediately from cached list entry while full state loads
+    const cached = sessions.find(s => s.session_id === sessionId)
+    if (cached) setCurrentSession(cached)
     connectWebSocket(sessionId)
+    // Load full state (signals, personas, drafts) in background
+    try {
+      const full = await sessionsApi.get(sessionId)
+      setCurrentSession(full)
+    } catch {
+      // cached stub is already shown
+    }
   }
 
   // ── Selected company ───────────────────────────────────────────────────
@@ -337,6 +355,7 @@ export default function App() {
                       <div className="px-4 pb-4">
                         <PersonaTable
                           personas={personas}
+                          signalCategory={selectedCompany?.persona_signal_category}
                           isHitlMode={isHitlMode}
                           sessionId={currentSession.session_id}
                           companyId={selectedCompanyId ?? ''}

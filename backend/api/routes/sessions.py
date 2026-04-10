@@ -15,7 +15,9 @@ from backend.api.session_store import (
     get_async_checkpointer,
     get_session_record,
     list_session_records,
+    load_and_register_session,
     register_session,
+    save_session_state,
     update_session_record,
 )
 from backend.api.websocket import manager
@@ -35,6 +37,7 @@ class SessionResponse(BaseModel):
     session_id: str
     status: str
     company_names: list[str]
+    company_states: Optional[dict] = None
     created_at: Optional[str] = None
     completed_at: Optional[str] = None
     error_message: Optional[str] = None
@@ -107,28 +110,29 @@ async def _run_pipeline_task(
             "session_id": session_id,
         })
 
-        async with get_async_checkpointer() as checkpointer:
-            graph = build_pipeline(checkpointer=checkpointer)
+        graph = build_pipeline(checkpointer=None)
+        active.checkpointer = None
 
-            # Stream events from graph — emit WebSocket events per stage
-            final_state: dict = {}
-            async for chunk in graph.astream(initial_state, config=config):
-                for node_name, node_output in chunk.items():
-                    if not isinstance(node_output, dict):
+        # Stream events from graph — emit WebSocket events per stage
+        final_state: dict = {}
+        async for chunk in graph.astream(initial_state, config=config):
+            for node_name, node_output in chunk.items():
+                if not isinstance(node_output, dict):
+                    continue
+                # Emit stage updates for each company that changed in this chunk
+                company_states = node_output.get("company_states", {})
+                for company_id, cs in company_states.items():
+                    if not isinstance(cs, dict):
                         continue
-                    # Emit stage updates for each company that changed in this chunk
-                    company_states = node_output.get("company_states", {})
-                    for company_id, cs in company_states.items():
-                        if not isinstance(cs, dict):
-                            continue
-                        stage = cs.get("current_stage", "")
-                        status = _status_value(cs.get("status", "running"))
-                        await manager.broadcast_stage_update(
-                            session_id, company_id, stage, status
-                        )
-                    _merge_chunk(final_state, node_output)
+                    stage = cs.get("current_stage", "")
+                    status = _status_value(cs.get("status", "running"))
+                    await manager.broadcast_stage_update(
+                        session_id, company_id, stage, status, company_state=cs
+                    )
+                _merge_chunk(final_state, node_output)
 
         active.last_state = final_state
+        save_session_state(session_id, final_state)
 
         # Check for HITL pause
         awaiting = {}
@@ -153,6 +157,11 @@ async def _run_pipeline_task(
             )
 
     except Exception as exc:
+        import logging, traceback
+        logging.getLogger(__name__).error(
+            "Pipeline failed for session %s: %s\n%s",
+            session_id, exc, traceback.format_exc()
+        )
         err_msg = str(exc)
         update_session_record(session_id, "failed", error_message=err_msg)
         await manager.broadcast_error(session_id, err_msg)
@@ -217,11 +226,19 @@ async def create_session(
     )
     active.task = task
 
+    from backend.agents.orchestrator import normalize_company_name
+
     rec = get_session_record(session_id)
+    # Pre-populate company_states with names so the frontend can display them immediately
+    initial_company_states = {
+        normalize_company_name(name): {"company_id": normalize_company_name(name), "company_name": name, "status": "pending"}
+        for name in body.company_names
+    }
     return SessionResponse(
         session_id=session_id,
         status="running",
         company_names=body.company_names,
+        company_states=initial_company_states,
         created_at=rec["created_at"] if rec else None,
     )
 
@@ -269,24 +286,24 @@ async def resume_session(session_id: str) -> dict:
                 "session_id": session_id,
             })
 
-            async with get_async_checkpointer() as checkpointer:
-                graph = build_pipeline(checkpointer=checkpointer)
+            checkpointer = active.checkpointer
+            graph = build_pipeline(checkpointer=checkpointer)
 
-                # Pass None to resume from checkpointed state
-                final_state: dict = {}
-                async for chunk in graph.astream(None, config=config):  # type: ignore[arg-type]
-                    for node_name, node_output in chunk.items():
-                        if not isinstance(node_output, dict):
+            # Pass None to resume from checkpointed state
+            final_state: dict = {}
+            async for chunk in graph.astream(None, config=config):  # type: ignore[arg-type]
+                for node_name, node_output in chunk.items():
+                    if not isinstance(node_output, dict):
+                        continue
+                    for company_id, cs in node_output.get("company_states", {}).items():
+                        if not isinstance(cs, dict):
                             continue
-                        for company_id, cs in node_output.get("company_states", {}).items():
-                            if not isinstance(cs, dict):
-                                continue
-                            stage = cs.get("current_stage", "")
-                            status = _status_value(cs.get("status", "running"))
-                            await manager.broadcast_stage_update(
-                                session_id, company_id, stage, status
-                            )
-                        _merge_chunk(final_state, node_output)
+                        stage = cs.get("current_stage", "")
+                        status = _status_value(cs.get("status", "running"))
+                        await manager.broadcast_stage_update(
+                            session_id, company_id, stage, status, company_state=cs
+                        )
+                    _merge_chunk(final_state, node_output)
 
             active.last_state = final_state
 
@@ -330,6 +347,8 @@ async def get_session(session_id: str) -> dict:
         raise HTTPException(status_code=404, detail="Session not found")
 
     active = get_active_session(session_id)
+    if active is None or active.last_state is None:
+        active = load_and_register_session(session_id)
     last_state = active.last_state if active else None
 
     response = dict(rec)

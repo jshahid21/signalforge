@@ -17,8 +17,11 @@ signal_ambiguity_score = 1 - mean(recency, specificity)
 from __future__ import annotations
 
 import json
+import logging
 import statistics
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 from langchain_core.messages import HumanMessage
 
@@ -56,20 +59,29 @@ def compute_deterministic_score(
 
 def _build_severity_prompt(signals: list[RawSignal]) -> str:
     """Build the LLM prompt for severity scoring."""
+    from backend.utils.date import date_context_line
     excerpts = "\n".join(
-        f"- [{s.get('signal_type', 'unknown')}] {s.get('content', '')[:300]}"
+        f"- [{s.get('signal_type', 'unknown')}] (published: {s.get('published_at') or 'unknown'}) {s.get('content', '')[:300]}"
         for s in signals[:5]
     )
-    return f"""You are evaluating sales signal quality for a B2B technology vendor.
+    return f"""{date_context_line()}
+
+You are evaluating whether signals indicate a company is actively investing in IT infrastructure or cloud technology — from the perspective of a B2B technology vendor selling to enterprise IT buyers.
 
 Signals collected for the company:
 {excerpts}
 
+IMPORTANT: Score close to 0.0 for any signal that is:
+- Retail promotions, sales events, or consumer-facing advertisements (e.g. "Save $25", "furniture sale")
+- Generic company news with no IT/infrastructure relevance
+- SEO or marketing pages with no technical content
+- Job postings unrelated to IT, engineering, or infrastructure
+
 Score each dimension from 0.0 to 1.0 (no commentary, just JSON):
-- recency: How recent is the signal? (within 7 days=1.0, within 30 days=0.7, older=lower)
-- specificity: How specific to a technical pain? (generic hiring=0.3, specific infra role=0.8)
-- technical_depth: Does the signal reference concrete technical concepts?
-- buying_intent: Does the signal suggest active investment or evaluation?
+- recency: How recent is the IT/infrastructure signal? (within 7 days=1.0, within 30 days=0.7, older=lower; retail/promo content=0.0)
+- specificity: How specific to a concrete IT/infrastructure pain point? (retail promo=0.0, generic IT=0.3, specific infra role=0.8, detailed migration/modernization=1.0)
+- technical_depth: Does the signal reference concrete IT concepts (cloud, infra, platform, security, DevOps)? (retail/promo=0.0)
+- buying_intent: Does the signal suggest active IT investment or technology evaluation? (retail promotions=0.0, general IT hiring=0.3, active cloud migration or vendor evaluation=0.9)
 
 Output ONLY valid JSON, nothing else:
 {{"recency": <float>, "specificity": <float>, "technical_depth": <float>, "buying_intent": <float>}}"""
@@ -198,8 +210,11 @@ async def run_signal_qualification(
     max_budget_usd: float,
 ) -> tuple[CompanyState, float]:
     """Qualify signals for one company. Returns (updated_cs, cost_incurred)."""
+    company_name = cs.get("company_name", "?")
     signals = cs.get("raw_signals", [])
     cost_incurred = 0.0
+    logger.info("[%s] qualification start | signals=%d | budget_remaining=$%.3f",
+                company_name, len(signals), max_budget_usd - current_total_cost)
 
     # Determine dominant tier
     tiers_used = {s.get("tier", SignalTier.TIER_1) for s in signals}
@@ -284,8 +299,12 @@ async def run_signal_qualification(
     updated_cs["qualified_signal"] = qualified_signal
     updated_cs["signal_qualified"] = qualified_signal["qualified"]
     updated_cs["cost_metadata"] = updated_cost
+    qualified = qualified_signal["qualified"]
+    logger.warning("[%s] qualification result | qualified=%s | composite=%.3f | det=%.3f | llm=%s",
+                company_name, qualified, qualified_signal.get("composite_score", 0),
+                det_score, f"{llm_severity_score:.3f}" if llm_scores else "none")
     updated_cs["status"] = (
-        PipelineStatus.RUNNING if qualified_signal["qualified"] else PipelineStatus.SKIPPED
+        PipelineStatus.RUNNING if qualified else PipelineStatus.SKIPPED
     )
     updated_cs["current_stage"] = (
         "research" if qualified_signal["qualified"] else "done"

@@ -19,11 +19,19 @@ from backend.models.state import CompanyState, QualifiedSignal, ResearchResult, 
 _LLM_COST = 0.004
 
 try:
-    from langchain_anthropic import ChatAnthropic
     from langchain_core.messages import HumanMessage
 except ImportError:
-    ChatAnthropic = None  # type: ignore[assignment,misc]
     HumanMessage = None  # type: ignore[assignment]
+
+
+def _make_llm(llm_provider: str, llm_model: str):
+    provider = (llm_provider or "").strip().lower()
+    if provider in ("openai", "gpt", "chatgpt", "open_ai"):
+        from langchain_openai import ChatOpenAI
+        return ChatOpenAI(model=llm_model, max_tokens=600, temperature=0)
+    else:
+        from langchain_anthropic import ChatAnthropic
+        return ChatAnthropic(model=llm_model, max_tokens=600, temperature=0)
 
 _VENDOR_NAME_BLOCKLIST = [
     "snowflake", "databricks", "aws", "amazon", "gcp", "google cloud", "azure", "microsoft",
@@ -39,7 +47,10 @@ def _build_solution_mapping_prompt(
     research_context: str,
     capability_map_text: str,
 ) -> str:
-    return f"""You are a senior solutions architect mapping a B2B sales signal to vendor-agnostic solution areas.
+    from backend.utils.date import date_context_line
+    return f"""{date_context_line()}
+
+You are a senior solutions architect mapping a B2B sales signal to vendor-agnostic solution areas.
 
 Company: {company_name}
 Signal: {signal_summary}
@@ -151,7 +162,7 @@ async def run_solution_mapping(
     )
 
     budget_remaining = max_budget_usd - current_total_cost
-    if not llm_model or budget_remaining < _LLM_COST or ChatAnthropic is None:
+    if not llm_model or budget_remaining < _LLM_COST or HumanMessage is None:
         solution_mapping = fallback_mapping
     else:
         prompt = _build_solution_mapping_prompt(
@@ -161,7 +172,7 @@ async def run_solution_mapping(
             capability_map_text=capability_map_text,
         )
         try:
-            llm = ChatAnthropic(model=llm_model, max_tokens=600, temperature=0)
+            llm = _make_llm(llm_provider, llm_model)
             response = await llm.ainvoke([HumanMessage(content=prompt)])
             parsed = _parse_solution_mapping_response(str(response.content))
             cost_incurred = _LLM_COST

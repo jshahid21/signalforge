@@ -27,7 +27,11 @@ from backend.models.state import (
     CostMetadata,
     RawSignal,
 )
+import logging
+
 from backend.tools.jsearch import JSearchClient
+
+logger = logging.getLogger(__name__)
 
 # Cost estimate for pre-qualification LLM ambiguity check
 _LLM_AMBIGUITY_COST = 0.001
@@ -76,16 +80,49 @@ def _job_to_raw_signal(job: dict[str, Any]) -> RawSignal:
     )
 
 
+_SIGNAL_TYPE_PATTERNS: list[tuple[list[str], str]] = [
+    (["job", "career", "hiring", "position", "opening", "recruit", "lever.co", "greenhouse.io", "workday"], "job_posting"),
+    (["press", "newsroom", "news", "announce", "funding", "raises", "series", "acqui"], "news"),
+    (["blog", "engineering", "tech", "developer", "devblog", "medium.com", "substack"], "engineering_blog"),
+    (["investor", "earnings", "annual-report", "sec.gov", "investor-relations"], "financial_news"),
+]
+
+
+def _classify_tavily_signal_type(result: dict[str, Any]) -> str:
+    """Classify a Tavily result into a signal_type based on URL and content patterns."""
+    url = (result.get("url") or "").lower()
+    content = (result.get("content") or "").lower()
+    combined = url + " " + content[:300]
+    for patterns, signal_type in _SIGNAL_TYPE_PATTERNS:
+        if any(p in combined for p in patterns):
+            return signal_type
+    return "web_search"
+
+
 def _search_result_to_raw_signal(result: dict[str, Any], tier: SignalTier) -> RawSignal:
     """Convert a Tavily search result to RawSignal."""
     return RawSignal(
         source="tavily",
-        signal_type="engineering_blog",
+        signal_type=_classify_tavily_signal_type(result),
         content=result.get("content", "")[:1000],
         url=result.get("url"),
-        published_at=None,
+        published_at=result.get("published_date"),   # Tavily returns ISO date string or None
         tier=tier,
     )
+
+
+def _is_signal_fresh(signal: RawSignal, max_days: int = 180) -> bool:
+    """Return True if the signal has no date (keep it) or is within max_days of today."""
+    published_at = signal.get("published_at")
+    if not published_at:
+        return True  # no date → can't filter, keep it
+    from datetime import date, timedelta
+    try:
+        # Accept ISO datetime (2024-01-15T...) or date-only (2024-01-15)
+        pub_date = date.fromisoformat(str(published_at)[:10])
+        return (date.today() - pub_date).days <= max_days
+    except (ValueError, TypeError):
+        return True  # unparseable → keep it
 
 
 async def run_tier_1(
@@ -94,17 +131,40 @@ async def run_tier_1(
 ) -> list[RawSignal]:
     """Acquire Tier 1 signals: JSearch job postings."""
     jobs = await jsearch_client.search_jobs(company_name, days_ago=30)
-    return [_job_to_raw_signal(job) for job in jobs]
+    signals = [_job_to_raw_signal(job) for job in jobs if job is not None]
+    return [s for s in signals if _is_signal_fresh(s, max_days=90)]
 
 
 async def run_tier_2(
     company_name: str,
     tavily_client: TavilySearchClient,
 ) -> list[RawSignal]:
-    """Acquire Tier 2 signals: Tavily web search for engineering blog/infra signals."""
-    query = f"{company_name} engineering blog infrastructure OR platform"
-    results = await tavily_client.search(query, max_results=10, days=90)
-    return [_search_result_to_raw_signal(r, SignalTier.TIER_2) for r in results]
+    """Acquire Tier 2 signals: parallel Tavily queries across signal dimensions."""
+    queries = [
+        f"{company_name} engineering infrastructure cloud platform",
+        f"{company_name} technology hiring devops kubernetes",
+        f"{company_name} news announcement funding technology",
+    ]
+    tasks = [
+        tavily_client.search(q, max_results=5, days=180)
+        for q in queries
+    ]
+    results_per_query = await asyncio.gather(*tasks, return_exceptions=True)
+
+    seen_urls: set[str] = set()
+    signals: list[RawSignal] = []
+    for results in results_per_query:
+        if isinstance(results, Exception):
+            continue
+        for r in results:
+            url = r.get("url") or ""
+            if url and url in seen_urls:
+                continue
+            seen_urls.add(url)
+            signal = _search_result_to_raw_signal(r, SignalTier.TIER_2)
+            if _is_signal_fresh(signal, max_days=180):
+                signals.append(signal)
+    return signals
 
 
 def _should_escalate_to_tier_2(
@@ -213,13 +273,17 @@ async def run_signal_ingestion(
         return cs, 0.0  # type: ignore[return-value]
 
     keywords = capability_map.all_keywords() if capability_map else []
+    logger.info("[%s] ingestion start | keywords=%d | budget_remaining=$%.3f",
+                company_name, len(keywords), max_budget_usd - current_total_cost)
 
     # --- Tier 1 (always) ---
     try:
         tier_1_signals = await run_tier_1(company_name, jsearch_client)
         cost_incurred += _TIER_1_COST_PER_CALL
         tier_1_calls = 1
+        logger.info("[%s] tier1 signals=%d", company_name, len(tier_1_signals))
     except Exception as exc:
+        logger.warning("[%s] tier1 FAILED: %s: %s", company_name, type(exc).__name__, exc)
         cs = dict(cs)  # type: ignore[assignment]
         cs["errors"] = list(cs.get("errors", [])) + [
             CompanyError(

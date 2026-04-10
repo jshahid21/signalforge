@@ -60,81 +60,25 @@ def apply_persona_selection(
 
 
 async def hitl_gate_node(state: AgentState) -> dict:
-    """LangGraph node — pauses the graph for human persona selection.
+    """LangGraph node — signals that human persona selection is required.
 
-    Sits between company_pipeline fan-out results and END. Detects companies
-    with current_stage == "awaiting_persona_selection", calls interrupt() to
-    pause the graph, and on resume dispatches synthesis-only company_pipeline
-    runs via Command(send=[Send(...)]).
-
-    Requires the graph to be compiled with a MemorySaver checkpointer.
-
-    Resume value format: {company_id: [persona_id, ...], ...}
+    Detects companies with current_stage == "awaiting_persona_selection" and
+    returns the HITL flag so the application layer can pause and notify the UI.
+    Resume is handled outside LangGraph (personas confirm endpoint calls
+    synthesis/draft directly) to avoid LangGraph checkpoint serialization issues
+    with Send objects.
     """
-    from backend.config.capability_map import load_capability_map
-    from backend.config.loader import load_config
-
-    try:
-        from langgraph.types import Command, Send
-        from langgraph.types import interrupt as langgraph_interrupt
-    except ImportError:
-        # LangGraph interrupt not available — return no-op
-        return {"awaiting_persona_selection": False}
-
     company_states = state.get("company_states", {})
-    awaiting = {
-        company_id: cs
+    awaiting_ids = [
+        company_id
         for company_id, cs in company_states.items()
         if cs.get("current_stage") == "awaiting_persona_selection"
-    }
+    ]
 
-    if not awaiting:
+    if not awaiting_ids:
         return {"awaiting_persona_selection": False}
 
-    # Pause and surface generated personas to the UI/API
-    selections: dict[str, list[str]] = langgraph_interrupt({
-        "awaiting_persona_selection": {
-            company_id: cs.get("generated_personas", [])
-            for company_id, cs in awaiting.items()
-        }
-    })
-    # selections = {company_id: [persona_id, ...]} — provided by Command(resume=...)
-
-    # Apply selections and dispatch synthesis runs.
-    # Only dispatch companies that received non-empty persona selections.
-    # Companies omitted from the resume payload (empty selection list) remain in
-    # AWAITING_HUMAN and are NOT re-dispatched, preventing a full pipeline re-run.
-    config = load_config()
-    capability_map = load_capability_map()
-
-    updated_states: dict = {}
-    sends: list = []
-    for company_id, cs in awaiting.items():
-        selected_ids = selections.get(company_id, []) if isinstance(selections, dict) else []
-        if not selected_ids:
-            # No selection provided — leave this company in AWAITING_HUMAN.
-            # The caller must include persona_ids for each company in the resume payload.
-            updated_states[company_id] = cs
-            continue
-        updated_cs = apply_persona_selection(cs, selected_ids)
-        updated_states[company_id] = updated_cs
-        sends.append(Send("company_pipeline", CompanyInput(
-            company_state=updated_cs,
-            seller_profile=state.get("seller_profile", {}),  # type: ignore[arg-type]
-            max_budget_usd=config.session_budget.max_usd,
-            total_cost_usd_at_dispatch=state.get("total_cost_usd", 0.0),
-            capability_map=capability_map,
-            jsearch_api_key=config.api_keys.jsearch,
-            tavily_api_key=config.api_keys.tavily,
-            llm_provider=config.api_keys.llm_provider,
-            llm_model=config.api_keys.llm_model,
-        )))
-
-    return Command(  # type: ignore[return-value]
-        update={
-            "company_states": updated_states,
-            "awaiting_persona_selection": False,
-            "awaiting_review": [],
-        },
-        goto=sends,
-    )
+    return {
+        "awaiting_persona_selection": True,
+        "awaiting_review": awaiting_ids,
+    }

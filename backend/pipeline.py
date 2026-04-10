@@ -22,7 +22,6 @@ Nodes are imported from backend/agents/. This module only wires the graph.
 """
 from __future__ import annotations
 
-from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, StateGraph
 
 from backend.agents.hitl_gate import (
@@ -232,8 +231,6 @@ def build_pipeline(checkpointer=None):
             config=config,
         )
     """
-    if checkpointer is None:
-        checkpointer = MemorySaver()
     graph = StateGraph(AgentState)
 
     graph.add_node("orchestrator", orchestrator_node)

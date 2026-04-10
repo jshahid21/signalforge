@@ -1,8 +1,7 @@
 /**
- * Insights panel — signal summary, core pain point, solution areas, confidence badge.
- * Scoped to the selected persona when provided.
+ * Insights panel — signals, solution mapping, synthesis output per persona.
  */
-import type { CompanyState, Persona } from '../api/client'
+import type { CompanyState, Persona, RawSignal } from '../api/client'
 import { HumanReviewBadge } from './HumanReviewBadge'
 
 interface Props {
@@ -11,13 +10,13 @@ interface Props {
 }
 
 export function InsightsPanel({ company, selectedPersona }: Props) {
-  const { qualified_signal: signal, synthesis_outputs } = company
-  // Scope to selected persona's synthesis output; fall back to first available
+  const { qualified_signal: signal, solution_mapping, synthesis_outputs, human_review_required, human_review_reasons } = company
+
   const synthesis = selectedPersona
     ? (synthesis_outputs?.[selectedPersona.persona_id] ?? Object.values(synthesis_outputs ?? {})[0])
     : Object.values(synthesis_outputs ?? {})[0]
 
-  if (!signal && !synthesis) {
+  if (!signal && !solution_mapping && !synthesis) {
     return (
       <div className="flex h-full items-center justify-center text-sm text-gray-400 p-8">
         {company.status === 'running' ? 'Analyzing signals…' : 'No signals found.'}
@@ -25,7 +24,10 @@ export function InsightsPanel({ company, selectedPersona }: Props) {
     )
   }
 
-  const confidencePct = synthesis?.confidence_score ?? (signal ? Math.round(signal.composite_score * 100) : null)
+  // Confidence from solution_mapping (0–100 int) or fall back to composite score
+  const confidencePct = solution_mapping?.confidence_score
+    ?? (signal ? Math.round(signal.composite_score * 100) : null)
+
   const confidenceColor =
     confidencePct == null ? 'gray'
     : confidencePct >= 75 ? 'green'
@@ -41,20 +43,54 @@ export function InsightsPanel({ company, selectedPersona }: Props) {
 
   return (
     <div className="space-y-4 p-4">
-      {/* Signal Summary */}
+
+      {/* Signals */}
       {signal && (
         <div>
-          <h3 className="text-xs font-semibold uppercase text-gray-500 mb-1">Signal</h3>
-          <p className="text-sm text-gray-800">{signal.summary}</p>
-          <div className="mt-1 flex gap-2 items-center">
-            <span className="text-xs text-gray-500">{signal.signal_type}</span>
-            <span className="text-xs text-gray-400">·</span>
-            <span className="text-xs text-gray-500">Tier: {signal.tier_used}</span>
-          </div>
+          <h3 className="text-xs font-semibold uppercase text-gray-500 mb-2">
+            Signals{signal.raw_signals && signal.raw_signals.length > 1 ? ` (${signal.raw_signals.length})` : ''}
+          </h3>
+          {signal.raw_signals && signal.raw_signals.length > 0 ? (
+            <div className="space-y-2">
+              {signal.raw_signals.map((raw: RawSignal, i: number) => (
+                <div key={i} className="rounded border border-gray-100 bg-gray-50 p-2.5">
+                  <p className="text-xs text-gray-800 line-clamp-3">{raw.content}</p>
+                  <div className="mt-1.5 flex flex-wrap gap-x-2 gap-y-1 items-center">
+                    <span className="text-xs text-gray-500">{raw.signal_type}</span>
+                    <span className="text-xs text-gray-400">·</span>
+                    <span className="text-xs text-gray-500">Tier: {raw.tier}</span>
+                    {raw.url && (
+                      <>
+                        <span className="text-xs text-gray-400">·</span>
+                        <a
+                          href={raw.url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-xs text-blue-600 hover:underline truncate max-w-[200px]"
+                          title={raw.url}
+                        >
+                          Source ↗
+                        </a>
+                      </>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <>
+              <p className="text-sm text-gray-800">{signal.summary}</p>
+              <div className="mt-1 flex gap-2 items-center">
+                <span className="text-xs text-gray-500">{signal.signal_type}</span>
+                <span className="text-xs text-gray-400">·</span>
+                <span className="text-xs text-gray-500">Tier: {signal.tier_used}</span>
+              </div>
+            </>
+          )}
         </div>
       )}
 
-      {/* Confidence badge */}
+      {/* Confidence */}
       {confidencePct != null && (
         <div className="flex items-center gap-2">
           <span className="text-xs text-gray-500">Confidence</span>
@@ -65,35 +101,57 @@ export function InsightsPanel({ company, selectedPersona }: Props) {
       )}
 
       {/* Solution mapping */}
-      {synthesis && (
+      {solution_mapping && (
         <>
           <div>
             <h3 className="text-xs font-semibold uppercase text-gray-500 mb-1">Core Problem</h3>
-            <p className="text-sm text-gray-800">{synthesis.core_problem}</p>
+            <p className="text-sm text-gray-800">{solution_mapping.core_problem}</p>
           </div>
-          <div>
-            <h3 className="text-xs font-semibold uppercase text-gray-500 mb-2">Solution Areas</h3>
-            <div className="flex flex-wrap gap-1.5">
-              {synthesis.solution_areas.map(area => (
-                <span
-                  key={area}
-                  className="rounded-full bg-blue-50 border border-blue-200 px-2.5 py-0.5 text-xs text-blue-700"
-                >
-                  {area}
-                </span>
-              ))}
+          {solution_mapping.solution_areas.length > 0 && (
+            <div>
+              <h3 className="text-xs font-semibold uppercase text-gray-500 mb-2">Solution Areas</h3>
+              <div className="flex flex-wrap gap-1.5">
+                {solution_mapping.solution_areas.map(area => (
+                  <span
+                    key={area}
+                    className="rounded-full bg-blue-50 border border-blue-200 px-2.5 py-0.5 text-xs text-blue-700"
+                  >
+                    {area}
+                  </span>
+                ))}
+              </div>
             </div>
-          </div>
+          )}
+        </>
+      )}
+
+      {/* Synthesis — persona-scoped */}
+      {synthesis && (
+        <>
+          {synthesis.core_pain_point && (
+            <div>
+              <h3 className="text-xs font-semibold uppercase text-gray-500 mb-1">Pain Point</h3>
+              <p className="text-sm text-gray-800">{synthesis.core_pain_point}</p>
+            </div>
+          )}
           {synthesis.technical_context && (
             <div>
               <h3 className="text-xs font-semibold uppercase text-gray-500 mb-1">Technical Context</h3>
               <p className="text-sm text-gray-700">{synthesis.technical_context}</p>
             </div>
           )}
-          {synthesis.human_review_required && (
-            <HumanReviewBadge reason={synthesis.human_review_reason} />
+          {synthesis.buyer_relevance && (
+            <div>
+              <h3 className="text-xs font-semibold uppercase text-gray-500 mb-1">Buyer Relevance</h3>
+              <p className="text-sm text-gray-700">{synthesis.buyer_relevance}</p>
+            </div>
           )}
         </>
+      )}
+
+      {/* Human review */}
+      {human_review_required && (
+        <HumanReviewBadge reason={human_review_reasons?.[0]} />
       )}
     </div>
   )

@@ -21,6 +21,7 @@ Version:
 """
 from __future__ import annotations
 
+import asyncio
 import uuid
 from typing import Optional
 
@@ -34,8 +35,20 @@ from backend.models.state import (
     SynthesisOutput,
 )
 
-_DRAFT_CONFIDENCE_GATE = 60   # confidence < 60 → skip draft
+_DRAFT_CONFIDENCE_GATE = 35   # confidence < 35 → skip draft (truly no signal)
+_DRAFT_LOW_CONFIDENCE = 60    # confidence < 60 → draft with hedged tone, no solution pitch
 _LLM_COST = 0.005             # per draft
+
+
+def _make_llm(llm_provider: str, llm_model: str, temperature: float = 0.3):
+    """Instantiate the correct LangChain LLM based on provider."""
+    provider = (llm_provider or "").strip().lower()
+    if provider in ("openai", "gpt", "chatgpt", "open_ai"):
+        from langchain_openai import ChatOpenAI
+        return ChatOpenAI(model=llm_model, max_tokens=800, temperature=temperature)
+    else:
+        from langchain_anthropic import ChatAnthropic
+        return ChatAnthropic(model=llm_model, max_tokens=800, temperature=temperature)
 
 _TONE_GUIDANCE: dict[str, str] = {
     "economic_buyer": (
@@ -57,10 +70,8 @@ _TONE_GUIDANCE: dict[str, str] = {
 }
 
 try:
-    from langchain_anthropic import ChatAnthropic
     from langchain_core.messages import HumanMessage, SystemMessage
 except ImportError:
-    ChatAnthropic = None  # type: ignore[assignment,misc]
     HumanMessage = None  # type: ignore[assignment]
     SystemMessage = None  # type: ignore[assignment]
 
@@ -71,31 +82,36 @@ def _build_draft_system_prompt(
 ) -> str:
     """Build the system prompt with seller profile and few-shot memory examples."""
     parts: list[str] = [
-        "You are a senior solutions architect writing a B2B outreach email. "
-        "Your tone is technically credible and direct — not promotional or generic. "
-        "Structure: Problem → technical context → solution alignment → call to action. "
-        "AVOID these phrases: 'I came across your company', 'I hope this finds you well', "
-        "'I wanted to reach out', 'I noticed', or any similar opener."
+        "You are writing a cold outreach email as a senior practitioner — not a salesperson. "
+        "Your goal is to start a genuine conversation, not to sell anything. "
+        "The email should read like a peer reaching out with a relevant observation, not a vendor pitching a product. "
+        "\n\nCore rules:"
+        "\n- Ground everything in the specific signals provided. Do not invent or assume context."
+        "\n- Name the challenge or operational pressure the signals suggest — without claiming you have the answer."
+        "\n- If solution alignment is strong, mention a relevant capability briefly (1 sentence). If it is weak or unclear, ask a question instead."
+        "\n- The call to action is a short conversation to compare notes — NEVER a 'demo', 'presentation', or 'platform walkthrough'."
+        "\n- 100–175 words maximum. Every sentence must earn its place."
+        "\n\nForbidden phrases (do not use any of these): 'I hope this finds you well', "
+        "'I came across', 'I wanted to reach out', 'I noticed', 'I'm reaching out because', "
+        "'leverage', 'synergies', 'best-in-class', 'revolutionize', 'game-changing', "
+        "'seamlessly', 'end-to-end solution', 'empower your team'."
     ]
 
     if seller_profile and seller_profile.get("company_name"):
         portfolio = ", ".join(seller_profile.get("portfolio_items", []))
         parts.append(
-            f"\nThe seller is from {seller_profile['company_name']}. "
-            f"Products/services: {portfolio or 'not configured'}. "
-            "Frame the solution alignment in terms of these specific products."
+            f"\n\nSeller context: {seller_profile['company_name']} — {portfolio or 'capabilities not configured'}. "
+            "Only reference this if there is a clear, specific connection to the inferred pain point. "
+            "Do not force it."
         )
     else:
-        parts.append(
-            "\nNo seller profile configured — write in vendor-agnostic terms."
-        )
+        parts.append("\n\nNo seller profile — write in vendor-agnostic terms.")
 
     if few_shot_examples:
-        parts.append("\n\nApproved examples to guide your tone and quality:")
+        parts.append("\n\nApproved examples (use for tone reference only — do not copy content):")
         for i, ex in enumerate(few_shot_examples[:2], 1):
             parts.append(
-                f"\nExample {i}:\n"
-                f"Subject: {getattr(ex, 'draft_subject', '')}\n"
+                f"\nExample {i}:\nSubject: {getattr(ex, 'draft_subject', '')}\n"
                 f"Body: {getattr(ex, 'draft_body', '')[:400]}"
             )
 
@@ -108,28 +124,51 @@ def _build_draft_user_prompt(
     synthesis: SynthesisOutput,
     core_problem: str,
     solution_areas: list[str],
+    confidence_score: int = 50,
+    raw_signal_excerpts: list[str] | None = None,
 ) -> str:
+    from backend.utils.date import date_context_line
     tone = _TONE_GUIDANCE.get(persona["role_type"], _TONE_GUIDANCE["influencer"])
-    areas_text = ", ".join(solution_areas) if solution_areas else "technology modernization"
 
-    return f"""Write an outreach email for: {company_name}
-Target persona: {persona['title']} ({persona['role_type']})
+    high_confidence = confidence_score >= _DRAFT_LOW_CONFIDENCE
+    solution_instruction = (
+        f"Confidence is {confidence_score}/100 — strong enough. You may briefly reference a relevant capability "
+        f"(1 sentence): {synthesis.get('solution_alignment', '')}. Lead with the pain point, not the product."
+        if high_confidence else
+        f"Confidence is {confidence_score}/100 — the signal-to-solution alignment is not strong enough to pitch anything. "
+        f"Do NOT propose a solution or mention capabilities. Ask one genuine question about whether the inferred "
+        f"challenge is on their radar."
+    )
 
-Tone guidance: {tone}
+    excerpts = raw_signal_excerpts or []
+    signals_block = "\n".join(f"  • {s[:200]}" for s in excerpts[:4]) if excerpts else "  • Limited signal data — be appropriately hedged"
 
-Context:
-- Core pain point: {synthesis['core_pain_point']}
-- Technical context: {synthesis['technical_context']}
-- Solution alignment: {synthesis['solution_alignment']}
-- Why this persona cares: {synthesis['buyer_relevance']}
-- Value hypothesis: {synthesis['value_hypothesis']}
-- Risk if ignored: {synthesis['risk_if_ignored']}
-- Solution areas: {areas_text}
+    return f"""{date_context_line()}
+
+Target: {persona['title']} at {company_name}
+Persona type: {persona['role_type']}
+Tone: {tone}
+
+Signals observed (ground the email in these — do not invent context):
+{signals_block}
+
+Inferred challenge: {synthesis.get('core_pain_point', core_problem)}
+Technical context: {synthesis.get('technical_context', '')}
+Why this persona specifically: {synthesis.get('persona_targeting', '')}
+Risk if unaddressed: {synthesis.get('risk_if_ignored', '')}
+
+{solution_instruction}
+
+Structure:
+1. One sentence stating what the signals suggest is happening at {company_name} — specific, not generic
+2. One or two sentences on the operational or technical pressure this creates — without assuming you know their situation
+3. {"One sentence on a relevant capability or what you've seen work at similar companies" if high_confidence else "One direct question: is this challenge actually on their radar?"}
+4. One sentence proposing a 15-minute call to compare notes — not a demo
 
 Output ONLY valid JSON:
 {{
-  "subject": "<Subject line — must reference a specific signal or technical fact>",
-  "body": "<Full email body — 150-250 words — no generic openers>"
+  "subject": "<8-12 words, specific to the observed signal, zero hype>",
+  "body": "<100-175 words, no clichés, grounded in the signals above>"
 }}"""
 
 
@@ -191,7 +230,7 @@ async def run_draft(
     if existing_draft is not None:
         version = existing_draft.get("version", 1) + 1
 
-    if not llm_model or ChatAnthropic is None:
+    if not llm_model or HumanMessage is None:
         # Fallback draft (no LLM)
         draft = Draft(
             draft_id=str(uuid.uuid4()),
@@ -205,6 +244,13 @@ async def run_draft(
         )
         return draft, 0.0
 
+    raw_signals = cs.get("qualified_signal", {}).get("raw_signals", []) if cs.get("qualified_signal") else []
+    raw_signal_excerpts = [
+        f"[{s.get('signal_type', '')}] {s.get('content', '')[:200]}"
+        for s in raw_signals[:5]
+        if s.get("content")
+    ]
+
     system_prompt = _build_draft_system_prompt(
         seller_profile=seller_profile,
         few_shot_examples=few_shot_examples or [],
@@ -215,6 +261,8 @@ async def run_draft(
         synthesis=synthesis,
         core_problem=core_problem,
         solution_areas=solution_areas,
+        confidence_score=int(confidence_score),
+        raw_signal_excerpts=raw_signal_excerpts,
     )
 
     # Attempt LLM call with 1 retry (2 total attempts); DRAFT_QUALITY if both fail
@@ -222,7 +270,7 @@ async def run_draft(
     cost_incurred = 0.0
     for _attempt in range(2):
         try:
-            llm = ChatAnthropic(model=llm_model, max_tokens=800, temperature=0.3)
+            llm = _make_llm(llm_provider, llm_model, temperature=0.3)
             response = await llm.ainvoke([
                 SystemMessage(content=system_prompt),
                 HumanMessage(content=user_prompt),
@@ -285,7 +333,7 @@ async def run_drafts_for_company(
 
     cs = dict(cs)  # type: ignore[assignment]
 
-    # Confidence gate check for the whole company (spec §5.9)
+    # Hard gate: truly no signal (below _DRAFT_CONFIDENCE_GATE)
     if confidence_score < _DRAFT_CONFIDENCE_GATE and not override_requested:
         cs["human_review_required"] = True  # type: ignore[index]
         existing_reasons = list(cs.get("human_review_reasons", []))  # type: ignore[call-overload]
@@ -295,7 +343,10 @@ async def run_drafts_for_company(
         cs["current_stage"] = "done"  # type: ignore[index]
         return cs, 0.0  # type: ignore[return-value]
 
-    # If override requested, tag it
+    # Soft gate: low-confidence drafts still generate but are marked hedged
+    if confidence_score < _DRAFT_LOW_CONFIDENCE:
+        cs["low_confidence_draft"] = True  # type: ignore[index]
+
     if override_requested and confidence_score < _DRAFT_CONFIDENCE_GATE:
         cs["drafted_under_override"] = True  # type: ignore[index]
 
@@ -309,22 +360,30 @@ async def run_drafts_for_company(
         # No personas selected — fall back to all generated
         personas_to_draft = list(all_personas.values())
 
-    drafts = dict(cs.get("drafts", {}))
-    total_cost = 0.0
+    existing_drafts = dict(cs.get("drafts", {}))
 
-    for persona in personas_to_draft:
-        existing = drafts.get(persona["persona_id"])
-        draft, cost = await run_draft(
+    draft_tasks = [
+        run_draft(
             cs=cs,  # type: ignore[arg-type]
             persona=persona,
             seller_profile=seller_profile,
             llm_provider=llm_provider,
             llm_model=llm_model,
-            current_total_cost=current_total_cost + total_cost,
+            current_total_cost=current_total_cost,
             max_budget_usd=max_budget_usd,
             few_shot_examples=few_shot_examples,
-            existing_draft=existing,
+            existing_draft=existing_drafts.get(persona["persona_id"]),
         )
+        for persona in personas_to_draft
+    ]
+    results = await asyncio.gather(*draft_tasks, return_exceptions=True)
+
+    drafts = dict(existing_drafts)
+    total_cost = 0.0
+    for persona, result in zip(personas_to_draft, results):
+        if isinstance(result, Exception):
+            continue
+        draft, cost = result
         if draft is not None:
             drafts[persona["persona_id"]] = draft
         total_cost += cost

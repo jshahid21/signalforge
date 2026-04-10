@@ -19,15 +19,29 @@ from backend.models.state import CompanyError, CompanyState, ResearchResult
 _LLM_COST_PER_SUBTASK = 0.003
 
 
+def _make_llm(llm_provider: str, llm_model: str, max_tokens: int = 300):
+    provider = (llm_provider or "").strip().lower()
+    if provider in ("openai", "gpt", "chatgpt", "open_ai"):
+        from langchain_openai import ChatOpenAI
+        return ChatOpenAI(model=llm_model, max_tokens=max_tokens, temperature=0)
+    else:
+        from langchain_anthropic import ChatAnthropic
+        return ChatAnthropic(model=llm_model, max_tokens=max_tokens, temperature=0)
+
+
 async def _run_company_context(
     company_name: str,
     signal_summary: str,
+    llm_provider: str,
     llm_model: str,
 ) -> str | None:
     """Return 2–3 sentences of company/market context from LLM."""
     if not llm_model:
         return None
-    prompt = f"""You are a B2B technology sales researcher.
+    from backend.utils.date import date_context_line
+    prompt = f"""{date_context_line()}
+
+You are a B2B technology sales researcher.
 
 Company: {company_name}
 Signal summary: {signal_summary}
@@ -36,10 +50,8 @@ Provide 2–3 concise sentences of company context that would help a technical s
 the company's strategic situation — growth trajectory, market position, and relevance to \
 technology investment decisions. Be factual. Do not fabricate information."""
     try:
-        from langchain_anthropic import ChatAnthropic
         from langchain_core.messages import HumanMessage
-
-        llm = ChatAnthropic(model=llm_model, max_tokens=300, temperature=0)
+        llm = _make_llm(llm_provider, llm_model, max_tokens=300)
         response = await llm.ainvoke([HumanMessage(content=prompt)])
         return str(response.content).strip() or None
     except Exception:
@@ -48,6 +60,7 @@ technology investment decisions. Be factual. Do not fabricate information."""
 
 async def _run_tech_stack_extraction(
     signals_content: str,
+    llm_provider: str,
     llm_model: str,
 ) -> list[str]:
     """Extract explicitly mentioned technologies from signal text. No inference."""
@@ -62,10 +75,8 @@ Text:
 Output ONLY a JSON array of lowercase technology names. If none are found, output [].
 Example: ["kubernetes", "tensorflow", "postgres"]"""
     try:
-        from langchain_anthropic import ChatAnthropic
         from langchain_core.messages import HumanMessage
-
-        llm = ChatAnthropic(model=llm_model, max_tokens=200, temperature=0)
+        llm = _make_llm(llm_provider, llm_model, max_tokens=200)
         response = await llm.ainvoke([HumanMessage(content=prompt)])
         text = str(response.content).strip()
         start = text.find("[")
@@ -81,22 +92,24 @@ Example: ["kubernetes", "tensorflow", "postgres"]"""
 async def _run_hiring_signal_analysis(
     company_name: str,
     signals_content: str,
+    llm_provider: str,
     llm_model: str,
 ) -> str | None:
     """Summarize hiring trends and technology investment priorities from signal content."""
     if not llm_model or not signals_content.strip():
         return None
-    prompt = f"""Analyze the hiring signals for {company_name}:
+    from backend.utils.date import date_context_line
+    prompt = f"""{date_context_line()}
+
+Analyze the hiring signals for {company_name}:
 
 {signals_content[:2000]}
 
 Summarize in 1–2 sentences what these hiring patterns indicate about the company's technology \
 investment priorities and growth areas. Focus on patterns, not individual roles."""
     try:
-        from langchain_anthropic import ChatAnthropic
         from langchain_core.messages import HumanMessage
-
-        llm = ChatAnthropic(model=llm_model, max_tokens=200, temperature=0)
+        llm = _make_llm(llm_provider, llm_model, max_tokens=200)
         response = await llm.ainvoke([HumanMessage(content=prompt)])
         return str(response.content).strip() or None
     except Exception:
@@ -138,9 +151,9 @@ async def run_research(
 
     # Run all 3 sub-tasks concurrently; return_exceptions captures individual failures
     results = await asyncio.gather(
-        _run_company_context(company_name, signal_summary, llm_model),
-        _run_tech_stack_extraction(signals_content, llm_model),
-        _run_hiring_signal_analysis(company_name, signals_content, llm_model),
+        _run_company_context(company_name, signal_summary, llm_provider, llm_model),
+        _run_tech_stack_extraction(signals_content, llm_provider, llm_model),
+        _run_hiring_signal_analysis(company_name, signals_content, llm_provider, llm_model),
         return_exceptions=True,
     )
 

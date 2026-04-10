@@ -368,6 +368,7 @@ async def run_persona_generation(
     cs = dict(cs)  # type: ignore[assignment]
     cs["generated_personas"] = personas  # type: ignore[index]
     cs["recommended_outreach_sequence"] = sequence  # type: ignore[index]
+    cs["persona_signal_category"] = category  # type: ignore[index]
     cs["current_stage"] = "awaiting_persona_selection"  # type: ignore[index]
 
     # PERSONA_UNRESOLVED: < 2 personas generated (spec §5.5)

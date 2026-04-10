@@ -49,21 +49,40 @@ export interface Draft {
   version: number
 }
 
+export interface RawSignal {
+  source: string
+  signal_type: string
+  content: string
+  url?: string
+  published_at?: string
+  tier: string
+}
+
 export interface QualifiedSignal {
   summary: string
   signal_type: string
   composite_score: number
   tier_used: string
   qualified: boolean
+  raw_signals?: RawSignal[]
+}
+
+export interface SolutionMappingOutput {
+  core_problem: string
+  solution_areas: string[]
+  inferred_areas: string[]
+  confidence_score: number   // 0–100
+  reasoning: string
 }
 
 export interface SynthesisOutput {
-  core_problem: string
-  solution_areas: string[]
-  technical_context?: string
-  confidence_score: number
-  human_review_required: boolean
-  human_review_reason?: HumanReviewReason
+  core_pain_point: string
+  technical_context: string
+  solution_alignment: string
+  persona_targeting: string
+  buyer_relevance: string
+  value_hypothesis: string
+  risk_if_ignored: string
 }
 
 export interface CapabilityMapEntry {
@@ -79,10 +98,14 @@ export interface CompanyState {
   status: PipelineStatus
   current_stage: string
   qualified_signal?: QualifiedSignal
+  solution_mapping?: SolutionMappingOutput
   generated_personas: Persona[]
   selected_personas: string[]
+  persona_signal_category?: string
   synthesis_outputs: Record<string, SynthesisOutput>
   drafts: Record<string, Draft>
+  human_review_required?: boolean
+  human_review_reasons?: HumanReviewReason[]
   total_cost_usd: number
   error_message?: string
 }
@@ -156,7 +179,7 @@ export const setupApi = {
 export type WsEvent =
   | { type: 'pipeline_started'; session_id: string }
   | { type: 'pipeline_resumed'; session_id: string }
-  | { type: 'stage_update'; company_id: string; stage: string; status: string }
+  | { type: 'stage_update'; company_id: string; stage: string; status: string; company_state?: CompanyState }
   | { type: 'hitl_required'; awaiting_persona_selection: Record<string, Persona[]> }
   | { type: 'budget_warning'; pct_used: number }
   | { type: 'pipeline_complete' }

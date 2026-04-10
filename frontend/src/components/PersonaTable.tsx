@@ -4,8 +4,18 @@
 import { useState } from 'react'
 import type { Persona } from '../api/client'
 
+const CATEGORY_RATIONALE: Record<string, string> = {
+  ml_ai: 'ML/AI investment signals detected — targeting the buying group most likely to own AI infrastructure decisions.',
+  infra_scaling: 'Infrastructure scaling signals detected — targeting platform and reliability owners.',
+  cost_optimization: 'Cloud cost signals detected — targeting FinOps and infrastructure budget owners.',
+  security_compliance: 'Security/compliance signals detected — blocker alignment required before any evaluation can proceed.',
+  hiring_engineering: 'Engineering hiring signals detected — targeting the technical leadership driving the headcount push.',
+  default: 'General technology signals detected — balanced buying group selected.',
+}
+
 interface Props {
   personas: Persona[]
+  signalCategory?: string
   isHitlMode: boolean
   sessionId: string
   companyId: string
@@ -23,6 +33,7 @@ const ROLE_TYPE_LABELS: Record<string, string> = {
 
 export function PersonaTable({
   personas,
+  signalCategory,
   isHitlMode,
   onConfirmSelection,
   onEditPersona,
@@ -31,6 +42,7 @@ export function PersonaTable({
   const [selectedIds, setSelectedIds] = useState<Set<string>>(
     new Set(personas.map(p => p.persona_id))
   )
+  const [expandedId, setExpandedId] = useState<string | null>(null)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editTitle, setEditTitle] = useState('')
   const [editReason, setEditReason] = useState('')
@@ -103,8 +115,15 @@ export function PersonaTable({
     )
   }
 
+  const rationale = signalCategory ? CATEGORY_RATIONALE[signalCategory] : null
+
   return (
     <div className="space-y-2">
+      {rationale && (
+        <div className="rounded-md bg-gray-50 border border-gray-200 px-3 py-2 text-xs text-gray-600">
+          <span className="font-medium text-gray-700">Why these personas: </span>{rationale}
+        </div>
+      )}
       {isHitlMode && (
         <div className="rounded-md bg-yellow-50 border border-yellow-300 px-3 py-2 text-sm text-yellow-800">
           Select personas for outreach and click <strong>Confirm</strong>.
@@ -163,9 +182,21 @@ export function PersonaTable({
                         <span className="ml-1 text-xs text-gray-400">(edited)</span>
                       )}
                     </div>
-                    <div className="text-xs text-gray-500 mt-0.5 line-clamp-2">
-                      {persona.targeting_reason}
-                    </div>
+                    {persona.targeting_reason && (
+                      <button
+                        onClick={() => setExpandedId(expandedId === persona.persona_id ? null : persona.persona_id)}
+                        className="text-left w-full"
+                      >
+                        <div className={`text-xs text-gray-500 mt-0.5 ${expandedId === persona.persona_id ? '' : 'line-clamp-2'}`}>
+                          {persona.targeting_reason}
+                        </div>
+                        {persona.targeting_reason.length > 80 && (
+                          <span className="text-xs text-blue-500 hover:underline">
+                            {expandedId === persona.persona_id ? 'less' : 'more'}
+                          </span>
+                        )}
+                      </button>
+                    )}
                   </div>
                 )}
               </td>

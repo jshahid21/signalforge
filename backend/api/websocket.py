@@ -54,14 +54,28 @@ class ConnectionManager:
         company_id: str,
         stage: str,
         status: str,
+        company_state: dict | None = None,
     ) -> None:
-        await self.broadcast(session_id, {
+        import enum
+        event: dict[str, Any] = {
             "type": "stage_update",
             "session_id": session_id,
             "company_id": company_id,
             "stage": stage,
             "status": status,
-        })
+        }
+        if company_state is not None:
+            def _default(obj: Any) -> Any:
+                if isinstance(obj, enum.Enum):
+                    return obj.value
+                raise TypeError
+            try:
+                event["company_state"] = json.loads(
+                    json.dumps(company_state, default=_default)
+                )
+            except Exception:
+                pass  # omit company_state if not serializable
+        await self.broadcast(session_id, event)
 
     async def broadcast_pipeline_complete(self, session_id: str) -> None:
         await self.broadcast(session_id, {

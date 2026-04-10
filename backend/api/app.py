@@ -1,6 +1,10 @@
 """FastAPI application — routes, WebSocket, and middleware."""
 from __future__ import annotations
 
+import logging
+
+logging.basicConfig(level=logging.INFO)
+
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import ValidationError
 

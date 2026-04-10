@@ -25,11 +25,20 @@ from backend.models.state import (
 _LLM_COST = 0.004  # per (company, persona) pair
 
 try:
-    from langchain_anthropic import ChatAnthropic
     from langchain_core.messages import HumanMessage
 except ImportError:
-    ChatAnthropic = None  # type: ignore[assignment,misc]
     HumanMessage = None  # type: ignore[assignment]
+
+
+def _make_llm(llm_provider: str, llm_model: str):
+    """Instantiate the correct LangChain LLM based on provider."""
+    provider = (llm_provider or "").strip().lower()
+    if provider in ("openai", "gpt", "chatgpt", "open_ai"):
+        from langchain_openai import ChatOpenAI
+        return ChatOpenAI(model=llm_model, max_tokens=800, temperature=0)
+    else:
+        from langchain_anthropic import ChatAnthropic
+        return ChatAnthropic(model=llm_model, max_tokens=800, temperature=0)
 
 
 def _build_synthesis_prompt(
@@ -42,8 +51,11 @@ def _build_synthesis_prompt(
     role_type: str,
     targeting_reason: str,
 ) -> str:
+    from backend.utils.date import date_context_line
     areas_text = ", ".join(solution_areas) if solution_areas else "general technology modernization"
-    return f"""You are a senior solutions architect synthesizing intelligence for B2B outreach.
+    return f"""{date_context_line()}
+
+You are a senior solutions architect synthesizing intelligence for B2B outreach.
 
 Company: {company_name}
 Signal summary: {signal_summary}
@@ -112,10 +124,11 @@ async def _synthesize_for_persona(
     solution_areas: list[str],
     core_problem: str,
     persona: Persona,
+    llm_provider: str,
     llm_model: str,
 ) -> SynthesisOutput:
     """Generate SynthesisOutput for a single persona. Graceful on LLM failure."""
-    if not llm_model or ChatAnthropic is None:
+    if not llm_model or HumanMessage is None:
         return _make_fallback_synthesis(company_name, core_problem, persona["title"])
 
     prompt = _build_synthesis_prompt(
@@ -129,7 +142,7 @@ async def _synthesize_for_persona(
         targeting_reason=persona.get("targeting_reason", ""),
     )
     try:
-        llm = ChatAnthropic(model=llm_model, max_tokens=800, temperature=0)
+        llm = _make_llm(llm_provider, llm_model)
         response = await llm.ainvoke([HumanMessage(content=prompt)])
         parsed = _parse_synthesis_response(str(response.content))
         if parsed:
@@ -216,6 +229,7 @@ async def run_synthesis(
             solution_areas=solution_areas,
             core_problem=core_problem,
             persona=persona,
+            llm_provider=llm_provider,
             llm_model=llm_model,
         )
         for persona in personas_to_synthesize

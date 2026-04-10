@@ -6,7 +6,12 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from backend.api.session_store import get_active_session, get_session_record
+from backend.api.session_store import (
+    get_active_session,
+    get_session_record,
+    load_and_register_session,
+    save_session_state,
+)
 
 router = APIRouter(
     prefix="/sessions/{session_id}/companies/{company_id}/drafts",
@@ -36,6 +41,8 @@ async def regenerate_draft(
         raise HTTPException(status_code=404, detail="Session not found")
 
     active = get_active_session(session_id)
+    if active is None or active.last_state is None:
+        active = load_and_register_session(session_id)
     if active is None or active.last_state is None:
         raise HTTPException(status_code=404, detail="Session not active")
 
@@ -90,6 +97,7 @@ async def regenerate_draft(
         active.last_state["company_states"] = company_states
         # Accumulate cost
         active.last_state["total_cost_usd"] = active.last_state.get("total_cost_usd", 0.0) + cost
+        save_session_state(session_id, active.last_state)
 
         return {"message": "Draft regenerated", "draft": dict(draft)}
 
@@ -115,6 +123,8 @@ async def approve_draft(
         raise HTTPException(status_code=404, detail="Session not found")
 
     active = get_active_session(session_id)
+    if active is None or active.last_state is None:
+        active = load_and_register_session(session_id)
     if active is None or active.last_state is None:
         raise HTTPException(status_code=404, detail="Session not active")
 
@@ -144,6 +154,7 @@ async def approve_draft(
     company_states[company_id] = cs
     active.last_state = dict(active.last_state)
     active.last_state["company_states"] = company_states
+    save_session_state(session_id, active.last_state)
 
     # Write to Memory Agent
     from backend.agents.memory_agent import write_memory_record

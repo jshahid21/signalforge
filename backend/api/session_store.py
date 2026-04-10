@@ -48,6 +48,7 @@ class SessionRecord(_Base):
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     completed_at = Column(DateTime, nullable=True)
     error_message = Column(Text, nullable=True)
+    state_json = Column(Text, nullable=True)            # Full AgentState snapshot (JSON)
 
 
 # ---------------------------------------------------------------------------
@@ -71,6 +72,14 @@ def _init_meta_db() -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     _meta_engine = create_engine(f"sqlite:///{path}", echo=False)
     _Base.metadata.create_all(_meta_engine)
+    # Add state_json column to existing DBs that predate this column
+    with _meta_engine.connect() as conn:
+        from sqlalchemy import text
+        try:
+            conn.execute(text("ALTER TABLE sessions ADD COLUMN state_json TEXT"))
+            conn.commit()
+        except Exception:
+            pass  # Column already exists
     _MetaSession = sessionmaker(bind=_meta_engine)
 
 
@@ -147,6 +156,60 @@ def update_session_record(
         s.commit()
 
 
+def _serialize_state(state: dict) -> str:
+    """Serialize AgentState to JSON, converting enums to their string values."""
+    import enum
+
+    def _default(obj: Any) -> Any:
+        if isinstance(obj, enum.Enum):
+            return obj.value
+        raise TypeError(f"Not serializable: {type(obj)}")
+
+    return json.dumps(state, default=_default)
+
+
+def save_session_state(session_id: str, state: dict) -> None:
+    """Persist the full AgentState snapshot to the session record."""
+    try:
+        state_json = _serialize_state(state)
+    except Exception:
+        return  # Don't crash the pipeline on serialization failure
+
+    with _get_meta_session() as s:
+        rec = s.get(SessionRecord, session_id)
+        if rec is None:
+            return
+        rec.state_json = state_json
+        s.commit()
+
+
+def load_session_state(session_id: str) -> Optional[dict]:
+    """Load persisted AgentState from DB, or None if not saved yet."""
+    with _get_meta_session() as s:
+        rec = s.get(SessionRecord, session_id)
+        if rec is None or not rec.state_json:
+            return None
+        try:
+            return json.loads(rec.state_json)
+        except Exception:
+            return None
+
+
+def load_and_register_session(session_id: str) -> Optional["ActiveSession"]:
+    """Load a completed session's state from DB and register it in memory.
+
+    Returns the ActiveSession if the state was found and registered, else None.
+    This makes all in-memory endpoints (regenerate draft, approve, etc.) work
+    on sessions that were completed in a previous server run.
+    """
+    state = load_session_state(session_id)
+    if state is None:
+        return None
+    active = ActiveSession(session_id=session_id, last_state=state)
+    register_session(active)
+    return active
+
+
 # ---------------------------------------------------------------------------
 # AsyncSqliteSaver for LangGraph checkpointing
 # ---------------------------------------------------------------------------
@@ -163,12 +226,15 @@ def _sessions_db_path() -> str:
 
 @asynccontextmanager
 async def get_async_checkpointer() -> AsyncGenerator[Any, None]:
-    """Context manager that yields an AsyncSqliteSaver checkpointer."""
-    from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+    """Context manager that yields a MemorySaver checkpointer.
 
-    db_path = _sessions_db_path()
-    async with AsyncSqliteSaver.from_conn_string(db_path) as checkpointer:
-        yield checkpointer
+    AsyncSqliteSaver fails to serialize LangGraph Send objects when checkpointing
+    HITL interrupt state. MemorySaver avoids serialization entirely — HITL resume
+    happens in the same process so disk persistence is not required.
+    """
+    from langgraph.checkpoint.memory import MemorySaver
+
+    yield MemorySaver()
 
 
 # ---------------------------------------------------------------------------
@@ -184,6 +250,7 @@ class ActiveSession:
     task: Optional[asyncio.Task] = None
     event_queue: asyncio.Queue = field(default_factory=asyncio.Queue)
     graph: Any = None                    # compiled LangGraph graph
+    checkpointer: Any = None             # MemorySaver instance — must be reused for resume
     last_state: Optional[dict] = None   # most recent AgentState snapshot
     awaiting_persona_selection: bool = False
 

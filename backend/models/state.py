@@ -155,6 +155,7 @@ class CompanyState(TypedDict):
     generated_personas: List[Persona]
     selected_personas: List[str]                        # persona_ids (user-selected)
     recommended_outreach_sequence: List[str]            # Ordered persona_ids (system-suggested)
+    persona_signal_category: Optional[str]              # Signal category driving persona selection
 
     # Synthesis + drafting
     synthesis_outputs: Dict[str, SynthesisOutput]       # keyed by persona_id
@@ -187,19 +188,19 @@ class AgentState(TypedDict):
     # Per-company isolated states — merge_dict reducer prevents parallel collision
     company_states: Annotated[Dict[str, CompanyState], merge_dict]
 
-    # Global orchestration
+    # Global orchestration — use last-write-wins for scalars, concat for lists
     pipeline_started_at: str
     pipeline_completed_at: Optional[str]
-    active_company_ids: List[str]
+    active_company_ids: Annotated[List[str], lambda a, b: list(dict.fromkeys(a + b))]
     completed_company_ids: Annotated[List[str], operator.concat]
     failed_company_ids: Annotated[List[str], operator.concat]
 
     # Human-in-the-loop flags
-    awaiting_persona_selection: bool
-    awaiting_review: List[str]      # company_ids needing human review
+    awaiting_persona_selection: Annotated[bool, lambda a, b: a or b]
+    awaiting_review: Annotated[List[str], operator.concat]
 
     # Execution metadata
-    execution_log: List[str]        # Append-only log of agent actions
+    execution_log: Annotated[List[str], operator.concat]
     total_cost_usd: Annotated[float, operator.add]
 
     # Final output
