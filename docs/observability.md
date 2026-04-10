@@ -36,7 +36,7 @@ Tracing is **disabled by default** (`LANGCHAIN_TRACING_V2=false`). No code chang
 
 ## Performance Impact
 
-Traces are submitted asynchronously in the background. There is no measurable latency impact on pipeline execution.
+Traces are submitted asynchronously in the background. Latency impact on pipeline execution is minimal for typical workloads.
 
 ## Data Sensitivity
 
