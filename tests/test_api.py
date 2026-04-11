@@ -407,46 +407,23 @@ class TestConnectionManager:
 
 
 class TestSessionResume:
-    async def test_resume_unknown_session_returns_404(self, client) -> None:
+    """Resume-after-restart was removed in issue #8 bug 1 — the checkpointer
+    is an in-process MemorySaver and cannot rehydrate state across process
+    restarts. The endpoint now returns HTTP 410 Gone for every input."""
+
+    async def test_resume_endpoint_returns_410_gone(self, client) -> None:
         resp = await client.post("/sessions/nonexistent/resume")
-        assert resp.status_code == 404
+        assert resp.status_code == 410
+        assert "no longer supported" in resp.json()["detail"].lower()
 
-    async def test_resume_completed_session_returns_409(self, client) -> None:
+    async def test_resume_endpoint_returns_410_for_existing_session(self, client) -> None:
         from backend.api.session_store import create_session_record, update_session_record
 
-        create_session_record("s-done", ["A"], {})
-        update_session_record("s-done", "completed")
+        create_session_record("s-any", ["A"], {})
+        update_session_record("s-any", "awaiting_human")
 
-        resp = await client.post("/sessions/s-done/resume")
-        assert resp.status_code == 409
-
-    async def test_resume_failed_session_starts_background_task(self, client, monkeypatch) -> None:
-        from backend.api.session_store import create_session_record, update_session_record
-        from unittest.mock import AsyncMock, MagicMock, patch
-
-        create_session_record("s-fail", ["A"], {})
-        update_session_record("s-fail", "failed")
-
-        mock_checkpointer = MagicMock()
-        mock_checkpointer.__aenter__ = AsyncMock(return_value=mock_checkpointer)
-        mock_checkpointer.__aexit__ = AsyncMock(return_value=None)
-
-        mock_graph = MagicMock()
-
-        async def _empty_astream(*args, **kwargs):
-            return
-            yield  # make it an async generator
-
-        mock_graph.astream = _empty_astream
-
-        with patch("langgraph.checkpoint.sqlite.aio.AsyncSqliteSaver.from_conn_string",
-                   return_value=mock_checkpointer), \
-             patch("backend.pipeline.build_pipeline", return_value=mock_graph):
-            resp = await client.post("/sessions/s-fail/resume")
-
-        assert resp.status_code == 202
-        data = resp.json()
-        assert data["session_id"] == "s-fail"
+        resp = await client.post("/sessions/s-any/resume")
+        assert resp.status_code == 410
 
 
 # ---------------------------------------------------------------------------
@@ -506,6 +483,507 @@ class TestPersonaEdit:
             json={"title": "CTO"},
         )
         assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Persona confirm endpoint (HITL out-of-graph synthesis/draft)
+# ---------------------------------------------------------------------------
+
+
+class TestPersonaConfirmFailurePropagation:
+    """Regression tests for issue #8 bug 4: session status must reflect
+    per-company synthesis/draft outcomes, not unconditionally mark 'completed'.
+    """
+
+    def _setup_awaiting_session(self, session_id: str, company_ids: list[str]) -> None:
+        from backend.api.session_store import (
+            ActiveSession,
+            create_session_record,
+            register_session,
+        )
+
+        create_session_record(session_id, company_ids, {})
+        states = {
+            cid: {
+                "company_id": cid,
+                "company_name": cid.capitalize(),
+                "current_stage": "awaiting_persona_selection",
+                "generated_personas": [
+                    {
+                        "persona_id": "p1",
+                        "title": "VP Eng",
+                        "targeting_reason": "owns platform",
+                        "role_type": "technical_buyer",
+                        "seniority_level": "vp",
+                        "priority_score": 0.9,
+                        "is_custom": False,
+                        "is_edited": False,
+                    }
+                ],
+                "selected_personas": [],
+                "drafts": {},
+            }
+            for cid in company_ids
+        }
+        active = ActiveSession(session_id=session_id)
+        active.last_state = {"company_states": states, "total_cost_usd": 0.0}
+        active.awaiting_persona_selection = True
+        register_session(active)
+
+    async def test_all_companies_fail_marks_session_failed(
+        self, client, monkeypatch
+    ) -> None:
+        from unittest.mock import AsyncMock
+
+        from backend.api import session_store, websocket as ws_module
+        from backend.models.enums import PipelineStatus
+
+        self._setup_awaiting_session("sess-fail-all", ["acme"])
+
+        async def _fake_synth(cs, **kwargs):
+            cs = dict(cs)
+            cs["status"] = PipelineStatus.FAILED
+            return cs, 0.0
+
+        async def _fake_draft(cs, **kwargs):
+            return cs, 0.0
+
+        # Capture broadcast events so we can assert the terminal pipeline_complete
+        # is emitted alongside the error broadcast.
+        events: list[dict] = []
+
+        async def _capture_broadcast(session_id: str, event: dict) -> None:
+            events.append(event)
+
+        monkeypatch.setattr("backend.agents.synthesis.run_synthesis", _fake_synth)
+        monkeypatch.setattr(
+            "backend.agents.draft.run_drafts_for_company", _fake_draft
+        )
+        monkeypatch.setattr(
+            "backend.agents.memory_agent.get_few_shot_examples", lambda limit=2: []
+        )
+        monkeypatch.setattr(ws_module.manager, "broadcast", _capture_broadcast)
+
+        resp = await client.post(
+            "/sessions/sess-fail-all/companies/acme/personas/confirm",
+            json={"selected_persona_ids": ["p1"]},
+        )
+        assert resp.status_code == 202
+
+        # Wait for the background synthesis task to finish
+        active = session_store.get_active_session("sess-fail-all")
+        assert active is not None and active.task is not None
+        await active.task
+
+        rec = session_store.get_session_record("sess-fail-all")
+        assert rec is not None
+        assert rec["status"] == PipelineStatus.FAILED.value
+        assert rec["error_message"] is not None
+
+        # Must broadcast BOTH error and pipeline_complete so the UI can finalize
+        event_types = {e.get("type") for e in events}
+        assert "error" in event_types
+        assert "pipeline_complete" in event_types
+
+    async def test_partial_failure_marks_session_partial(
+        self, client, monkeypatch
+    ) -> None:
+        from unittest.mock import AsyncMock
+
+        from backend.api import session_store, websocket as ws_module
+        from backend.models.enums import PipelineStatus
+
+        self._setup_awaiting_session("sess-partial", ["acme", "globex"])
+
+        # Confirm acme first — it's fine; not yet all companies confirmed
+        resp1 = await client.post(
+            "/sessions/sess-partial/companies/acme/personas/confirm",
+            json={"selected_persona_ids": ["p1"]},
+        )
+        assert resp1.status_code == 202
+
+        async def _fake_synth(cs, **kwargs):
+            cs = dict(cs)
+            # acme succeeds, globex fails
+            if cs.get("company_id") == "globex":
+                cs["status"] = PipelineStatus.FAILED
+            else:
+                cs["status"] = PipelineStatus.RUNNING
+                cs["current_stage"] = "draft"
+            return cs, 0.0
+
+        async def _fake_draft(cs, **kwargs):
+            cs = dict(cs)
+            cs["drafts"] = {"p1": {"draft_id": "d1"}}
+            return cs, 0.0
+
+        events: list[dict] = []
+
+        async def _capture_broadcast(session_id: str, event: dict) -> None:
+            events.append(event)
+
+        monkeypatch.setattr("backend.agents.synthesis.run_synthesis", _fake_synth)
+        monkeypatch.setattr(
+            "backend.agents.draft.run_drafts_for_company", _fake_draft
+        )
+        monkeypatch.setattr(
+            "backend.agents.memory_agent.get_few_shot_examples", lambda limit=2: []
+        )
+        monkeypatch.setattr(ws_module.manager, "broadcast", _capture_broadcast)
+
+        resp2 = await client.post(
+            "/sessions/sess-partial/companies/globex/personas/confirm",
+            json={"selected_persona_ids": ["p1"]},
+        )
+        assert resp2.status_code == 202
+
+        active = session_store.get_active_session("sess-partial")
+        assert active is not None and active.task is not None
+        await active.task
+
+        rec = session_store.get_session_record("sess-partial")
+        assert rec is not None
+        assert rec["status"] == PipelineStatus.PARTIAL.value
+        assert "globex" in (rec["error_message"] or "")
+
+        # Must broadcast BOTH error and pipeline_complete on partial terminal
+        event_types = {e.get("type") for e in events}
+        assert "error" in event_types
+        assert "pipeline_complete" in event_types
+
+    async def test_pre_hitl_failure_plus_post_hitl_success_marks_partial(
+        self, client, monkeypatch
+    ) -> None:
+        """Round-4 regression: the personas.py final-status derivation must
+        consider ALL companies in the session, not just the ones that went
+        through the synthesis loop. If company A failed pre-HITL
+        (e.g., during signal_ingestion) and company B reached HITL and
+        synthesized successfully, the session must be marked 'partial' —
+        not 'completed'.
+        """
+        from backend.api import (
+            session_store,
+            websocket as ws_module,
+        )
+        from backend.models.enums import PipelineStatus
+
+        session_id = "sess-pre-hitl-mixed"
+        session_store.create_session_record(session_id, ["alpha", "beta"], {})
+
+        # alpha failed during signal_ingestion (pre-HITL). It never reaches
+        # the HITL gate and its current_stage stays at its pre-HITL value.
+        # beta reached the HITL gate and is awaiting persona selection.
+        states = {
+            "alpha": {
+                "company_id": "alpha",
+                "company_name": "Alpha",
+                "status": PipelineStatus.FAILED,
+                "current_stage": "signal_ingestion",
+                "generated_personas": [],
+                "selected_personas": [],
+                "drafts": {},
+            },
+            "beta": {
+                "company_id": "beta",
+                "company_name": "Beta",
+                "status": PipelineStatus.AWAITING_HUMAN,
+                "current_stage": "awaiting_persona_selection",
+                "generated_personas": [
+                    {
+                        "persona_id": "p1",
+                        "title": "VP Eng",
+                        "targeting_reason": "owns platform",
+                        "role_type": "technical_buyer",
+                        "seniority_level": "vp",
+                        "priority_score": 0.9,
+                        "is_custom": False,
+                        "is_edited": False,
+                    }
+                ],
+                "selected_personas": [],
+                "drafts": {},
+            },
+        }
+        active = session_store.ActiveSession(session_id=session_id)
+        active.last_state = {"company_states": states, "total_cost_usd": 0.0}
+        active.awaiting_persona_selection = True
+        session_store.register_session(active)
+
+        async def _fake_synth(cs, **kwargs):
+            # beta succeeds in synthesis
+            cs = dict(cs)
+            cs["status"] = PipelineStatus.RUNNING
+            cs["current_stage"] = "draft"
+            return cs, 0.0
+
+        async def _fake_draft(cs, **kwargs):
+            cs = dict(cs)
+            cs["drafts"] = {"p1": {"draft_id": "d1"}}
+            return cs, 0.0
+
+        events: list[dict] = []
+
+        async def _capture_broadcast(sid: str, event: dict) -> None:
+            events.append(event)
+
+        monkeypatch.setattr("backend.agents.synthesis.run_synthesis", _fake_synth)
+        monkeypatch.setattr(
+            "backend.agents.draft.run_drafts_for_company", _fake_draft
+        )
+        monkeypatch.setattr(
+            "backend.agents.memory_agent.get_few_shot_examples", lambda limit=2: []
+        )
+        monkeypatch.setattr(ws_module.manager, "broadcast", _capture_broadcast)
+
+        # Confirm beta's personas — alpha is already failed and not awaiting,
+        # so still_awaiting will be empty and _run_synthesis_phase fires.
+        resp = await client.post(
+            f"/sessions/{session_id}/companies/beta/personas/confirm",
+            json={"selected_persona_ids": ["p1"]},
+        )
+        assert resp.status_code == 202
+
+        active = session_store.get_active_session(session_id)
+        assert active is not None and active.task is not None
+        await active.task
+
+        rec = session_store.get_session_record(session_id)
+        assert rec is not None
+        # The crux of the regression: session must be PARTIAL because alpha
+        # failed pre-HITL. Prior to the round-4 fix the synthesis-loop-only
+        # derivation returned COMPLETED because processed_ids=[beta],
+        # failed_ids=[] — alpha was never seen.
+        assert rec["status"] == PipelineStatus.PARTIAL.value, (
+            f"pre-HITL failure was ignored in final status derivation — "
+            f"expected 'partial', got {rec['status']!r}"
+        )
+        assert rec["error_message"] is not None
+        assert "alpha" in rec["error_message"]
+
+        event_types = {e.get("type") for e in events}
+        assert "error" in event_types
+        assert "pipeline_complete" in event_types
+
+
+class TestPipelineTaskHappyPathTerminalStatus:
+    """Regression for PR #9 round-3 feedback: sessions.py::_run_pipeline_task
+    happy-path else branch must derive completed/partial/failed from
+    final_state['company_states'] instead of unconditionally marking the
+    session 'completed' when awaiting={}. An empty-awaiting set can also mean
+    'all companies failed before HITL' (e.g., signal ingestion errors).
+    """
+
+    def _make_initial_state(self) -> "AgentState":  # type: ignore[name-defined]
+        from backend.models.state import AgentState, SellerProfile
+
+        return AgentState(
+            target_companies=["Acme", "Globex"],
+            seller_profile=SellerProfile(
+                company_name="", portfolio_summary="", portfolio_items=[]
+            ),
+            company_states={},
+            pipeline_started_at="",
+            pipeline_completed_at=None,
+            active_company_ids=[],
+            completed_company_ids=[],
+            failed_company_ids=[],
+            awaiting_persona_selection=False,
+            awaiting_review=[],
+            execution_log=[],
+            total_cost_usd=0.0,
+            final_drafts=[],
+        )
+
+    def _make_stub_graph(self, company_states_chunk: dict):
+        """Return a stub LangGraph-like object whose astream yields one chunk."""
+
+        class _StubGraph:
+            async def astream(self, initial_state, config=None):
+                yield {
+                    "company_pipeline": {
+                        "company_states": company_states_chunk,
+                    }
+                }
+
+        return _StubGraph()
+
+    async def test_pipeline_task_all_fail_marks_session_failed(
+        self, monkeypatch
+    ) -> None:
+        from backend.api import session_store, websocket as ws_module
+        from backend.api.routes.sessions import _run_pipeline_task
+        from backend.models.enums import PipelineStatus
+
+        session_id = "sess-happy-all-fail"
+        session_store.create_session_record(session_id, ["Acme", "Globex"], {})
+        active = session_store.ActiveSession(session_id=session_id)
+        session_store.register_session(active)
+
+        events: list[dict] = []
+
+        async def _capture_broadcast(sid: str, event: dict) -> None:
+            events.append(event)
+
+        monkeypatch.setattr(ws_module.manager, "broadcast", _capture_broadcast)
+
+        # Stub graph yields both companies in FAILED status — no awaiting stage
+        stub_graph = self._make_stub_graph(
+            {
+                "acme": {
+                    "company_id": "acme",
+                    "company_name": "Acme",
+                    "status": PipelineStatus.FAILED,
+                    "current_stage": "signal_ingestion",
+                },
+                "globex": {
+                    "company_id": "globex",
+                    "company_name": "Globex",
+                    "status": PipelineStatus.FAILED,
+                    "current_stage": "signal_ingestion",
+                },
+            }
+        )
+        monkeypatch.setattr(
+            "backend.pipeline.build_pipeline", lambda checkpointer=None: stub_graph
+        )
+
+        await _run_pipeline_task(session_id, self._make_initial_state())
+
+        rec = session_store.get_session_record(session_id)
+        assert rec is not None
+        assert rec["status"] == PipelineStatus.FAILED.value, (
+            f"expected 'failed' when all companies failed on happy path, "
+            f"got {rec['status']!r}"
+        )
+        assert rec["error_message"] is not None
+        assert "acme" in rec["error_message"]
+        assert "globex" in rec["error_message"]
+
+        event_types = {e.get("type") for e in events}
+        assert "error" in event_types
+        assert "pipeline_complete" in event_types
+
+    async def test_pipeline_task_mixed_outcome_marks_session_partial(
+        self, monkeypatch
+    ) -> None:
+        from backend.api import session_store, websocket as ws_module
+        from backend.api.routes.sessions import _run_pipeline_task
+        from backend.models.enums import PipelineStatus
+
+        session_id = "sess-happy-mixed"
+        session_store.create_session_record(session_id, ["Acme", "Globex"], {})
+        active = session_store.ActiveSession(session_id=session_id)
+        session_store.register_session(active)
+
+        events: list[dict] = []
+
+        async def _capture_broadcast(sid: str, event: dict) -> None:
+            events.append(event)
+
+        monkeypatch.setattr(ws_module.manager, "broadcast", _capture_broadcast)
+
+        # One succeeds, one fails — expect session 'partial'
+        stub_graph = self._make_stub_graph(
+            {
+                "acme": {
+                    "company_id": "acme",
+                    "company_name": "Acme",
+                    "status": PipelineStatus.COMPLETED,
+                    "current_stage": "done",
+                },
+                "globex": {
+                    "company_id": "globex",
+                    "company_name": "Globex",
+                    "status": PipelineStatus.FAILED,
+                    "current_stage": "signal_ingestion",
+                },
+            }
+        )
+        monkeypatch.setattr(
+            "backend.pipeline.build_pipeline", lambda checkpointer=None: stub_graph
+        )
+
+        await _run_pipeline_task(session_id, self._make_initial_state())
+
+        rec = session_store.get_session_record(session_id)
+        assert rec is not None
+        assert rec["status"] == PipelineStatus.PARTIAL.value, (
+            f"expected 'partial' when only some companies failed on happy path, "
+            f"got {rec['status']!r}"
+        )
+        assert rec["error_message"] is not None
+        assert "globex" in rec["error_message"]
+        # acme succeeded — should not be in the failed list
+        assert "1/2" in rec["error_message"] or "globex" in rec["error_message"]
+
+        event_types = {e.get("type") for e in events}
+        assert "error" in event_types
+        assert "pipeline_complete" in event_types
+
+
+class TestPipelineTaskExceptBroadcast:
+    """Regression for PR #9 iteration feedback: sessions.py _run_pipeline_task
+    must broadcast pipeline_complete (in addition to broadcast_error) from its
+    except block, so the UI can finalize on terminal state after a crash.
+    """
+
+    async def test_pipeline_task_except_broadcasts_pipeline_complete(
+        self, monkeypatch
+    ) -> None:
+        from backend.api import session_store, websocket as ws_module
+        from backend.api.routes.sessions import _run_pipeline_task
+        from backend.models.enums import PipelineStatus
+        from backend.models.state import AgentState, SellerProfile
+
+        # Register an active session so _run_pipeline_task doesn't early-return
+        session_id = "sess-pipeline-crash"
+        session_store.create_session_record(session_id, ["Stripe"], {})
+        active = session_store.ActiveSession(session_id=session_id)
+        session_store.register_session(active)
+
+        events: list[dict] = []
+
+        async def _capture_broadcast(sid: str, event: dict) -> None:
+            events.append(event)
+
+        monkeypatch.setattr(ws_module.manager, "broadcast", _capture_broadcast)
+
+        # Force an exception deep inside the task by making build_pipeline raise
+        def _boom(*args, **kwargs):
+            raise RuntimeError("synthetic pipeline crash")
+
+        monkeypatch.setattr("backend.pipeline.build_pipeline", _boom)
+
+        initial_state = AgentState(
+            target_companies=["Stripe"],
+            seller_profile=SellerProfile(
+                company_name="", portfolio_summary="", portfolio_items=[]
+            ),
+            company_states={},
+            pipeline_started_at="",
+            pipeline_completed_at=None,
+            active_company_ids=[],
+            completed_company_ids=[],
+            failed_company_ids=[],
+            awaiting_persona_selection=False,
+            awaiting_review=[],
+            execution_log=[],
+            total_cost_usd=0.0,
+            final_drafts=[],
+        )
+
+        await _run_pipeline_task(session_id, initial_state)
+
+        # Session record must reflect terminal failure
+        rec = session_store.get_session_record(session_id)
+        assert rec is not None
+        assert rec["status"] == PipelineStatus.FAILED.value
+        assert rec["error_message"] is not None
+
+        # Must broadcast BOTH error and pipeline_complete (terminal state)
+        event_types = {e.get("type") for e in events}
+        assert "error" in event_types
+        assert "pipeline_complete" in event_types
 
 
 # ---------------------------------------------------------------------------

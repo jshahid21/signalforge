@@ -13,6 +13,10 @@ class PipelineStatus(str, Enum):
     RUNNING = "running"
     AWAITING_HUMAN = "awaiting_human"
     COMPLETED = "completed"
+    # PARTIAL = session-level terminal state used when some companies in a
+    # multi-company run succeed and some fail. Companies themselves remain
+    # either COMPLETED or FAILED — PARTIAL only appears on the session record.
+    PARTIAL = "partial"
     FAILED = "failed"
     SKIPPED = "skipped"
 

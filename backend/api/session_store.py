@@ -1,16 +1,19 @@
-"""Session store for SignalForge API — LangGraph AsyncSqliteSaver + session metadata.
+"""Session store for SignalForge API — session metadata + in-memory registry.
 
 The session store provides two layers:
-1. LangGraph AsyncSqliteSaver — stores checkpointed graph state for HITL interrupt/resume.
-   Database: ~/.signalforge/sessions.db
-2. In-memory session registry — tracks active pipeline tasks and event queues per session.
+1. SQLite session metadata (SQLAlchemy) — persists run status, company list,
+   seller profile, cost snapshot, and the latest AgentState JSON so reopened
+   sessions can be rehydrated for read-only views.
+2. In-memory session registry — tracks active pipeline tasks per session. The
+   LangGraph checkpointer (when used) is also an in-process MemorySaver, so
+   sessions do NOT survive process restarts.
 
 Session lifecycle:
-    POST /sessions → create_session() → start background task → emit events
-    GET /sessions/{id} → get_session_state() → reads from checkpointer
-    HITL gate → pipeline pauses at interrupt() → state checkpointed
-    POST .../personas/confirm → resume_session() → Command(resume=...) resumes graph
-    Pipeline completes → update_session_status() → mark completed
+    POST /sessions → create_session_record() → start background task → emit WS events
+    GET /sessions/{id} → get_session_record() + optional load_and_register_session()
+    HITL gate → graph returns awaiting flag → status set to "awaiting_human"
+    POST .../personas/confirm → synthesis + draft run directly (not via graph)
+    Pipeline finishes → update_session_record() → completed | partial | failed
 """
 from __future__ import annotations
 
@@ -42,7 +45,7 @@ class SessionRecord(_Base):
     __tablename__ = "sessions"
 
     session_id = Column(String(64), primary_key=True)
-    status = Column(String(32), default="running")     # running | awaiting_human | completed | failed
+    status = Column(String(32), default="running")     # running | awaiting_human | completed | partial | failed
     company_names_json = Column(Text, default="[]")     # JSON list of company names
     seller_profile_json = Column(Text, default="{}")    # JSON seller profile
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
@@ -149,7 +152,9 @@ def update_session_record(
         if rec is None:
             return
         rec.status = status
-        if status in ("completed", "failed"):
+        # Terminal session statuses stamp completed_at. Keep this list in sync
+        # with the PipelineStatus enum's terminal values.
+        if status in ("completed", "failed", "partial"):
             rec.completed_at = datetime.now(timezone.utc)
         if error_message:
             rec.error_message = error_message
@@ -211,26 +216,18 @@ def load_and_register_session(session_id: str) -> Optional["ActiveSession"]:
 
 
 # ---------------------------------------------------------------------------
-# AsyncSqliteSaver for LangGraph checkpointing
+# In-memory LangGraph checkpointer
 # ---------------------------------------------------------------------------
-
-
-def _sessions_db_path() -> str:
-    override = os.environ.get("SIGNALFORGE_SESSION_DB_PATH")
-    if override:
-        return override
-    path = Path.home() / ".signalforge" / "sessions.db"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    return str(path)
 
 
 @asynccontextmanager
 async def get_async_checkpointer() -> AsyncGenerator[Any, None]:
-    """Context manager that yields a MemorySaver checkpointer.
+    """Context manager that yields an in-process MemorySaver checkpointer.
 
-    AsyncSqliteSaver fails to serialize LangGraph Send objects when checkpointing
-    HITL interrupt state. MemorySaver avoids serialization entirely — HITL resume
-    happens in the same process so disk persistence is not required.
+    AsyncSqliteSaver could not serialize LangGraph Send objects produced at the
+    HITL gate. HITL resume was subsequently moved out of graph (see
+    `/sessions/.../personas/confirm`), so disk persistence of graph state is no
+    longer required — and no longer available across process restarts.
     """
     from langgraph.checkpoint.memory import MemorySaver
 

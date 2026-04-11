@@ -12,7 +12,6 @@ from backend.api.session_store import (
     create_session_record,
     generate_session_id,
     get_active_session,
-    get_async_checkpointer,
     get_session_record,
     list_session_records,
     load_and_register_session,
@@ -142,10 +141,41 @@ async def _run_pipeline_task(
 
         if awaiting:
             active.awaiting_persona_selection = True
-            update_session_record(session_id, "awaiting_human")
+            update_session_record(session_id, PipelineStatus.AWAITING_HUMAN.value)
             await manager.broadcast_hitl_required(session_id, awaiting)
         else:
-            update_session_record(session_id, "completed")
+            # Derive session terminal status from per-company outcomes
+            # (issue #8 bug 4, round 3): "no awaiting companies" does NOT
+            # imply success — all companies may have failed during signal
+            # ingestion (or any pre-HITL stage). Mirror personas.py so the
+            # UI sees completed/partial/failed based on actual outcomes.
+            processed_ids: list[str] = []
+            failed_ids: list[str] = []
+            for cid, cs in final_state.get("company_states", {}).items():
+                if not isinstance(cs, dict):
+                    continue
+                processed_ids.append(cid)
+                if cs.get("status") in (PipelineStatus.FAILED, "failed"):
+                    failed_ids.append(cid)
+
+            if not processed_ids or not failed_ids:
+                final_status = PipelineStatus.COMPLETED.value
+                err_msg = None
+            elif len(failed_ids) == len(processed_ids):
+                final_status = PipelineStatus.FAILED.value
+                err_msg = f"All companies failed: {', '.join(failed_ids)}"
+            else:
+                final_status = PipelineStatus.PARTIAL.value
+                err_msg = (
+                    f"{len(failed_ids)}/{len(processed_ids)} companies failed: "
+                    f"{', '.join(failed_ids)}"
+                )
+
+            update_session_record(session_id, final_status, error_message=err_msg)
+            # Broadcast pipeline_complete on ANY terminal state so the UI can
+            # finalize. Emit broadcast_error first when there's detail.
+            if err_msg:
+                await manager.broadcast_error(session_id, err_msg)
             await manager.broadcast_pipeline_complete(session_id)
 
         # Budget warning: if total cost >= 80% of max
@@ -163,8 +193,11 @@ async def _run_pipeline_task(
             session_id, exc, traceback.format_exc()
         )
         err_msg = str(exc)
-        update_session_record(session_id, "failed", error_message=err_msg)
+        update_session_record(session_id, PipelineStatus.FAILED.value, error_message=err_msg)
+        # Broadcast pipeline_complete on terminal state so the UI can finalize
+        # (stop spinners, enable actions). broadcast_error carries the detail.
         await manager.broadcast_error(session_id, err_msg)
+        await manager.broadcast_pipeline_complete(session_id)
 
 
 @router.post("", response_model=SessionResponse, status_code=201)
@@ -243,94 +276,27 @@ async def create_session(
     )
 
 
-@router.post("/{session_id}/resume", status_code=202)
+@router.post("/{session_id}/resume", status_code=410)
 async def resume_session(session_id: str) -> dict:
-    """Resume a session from its SqliteSaver checkpoint (after process restart).
+    """Resume-after-restart is no longer supported.
 
-    The LangGraph SqliteSaver persists graph state to disk. On process restart,
-    this endpoint rehydrates the session by:
-    1. Loading session metadata from SQLite
-    2. Creating a new pipeline graph connected to the existing checkpoint DB
-    3. Calling graph.ainvoke(None, ...) to resume from the last checkpoint
+    The session checkpointer was switched to an in-process MemorySaver to avoid
+    LangGraph serialization issues with Send objects at the HITL interrupt.
+    MemorySaver state does not survive process restarts, so rehydrating a session
+    from disk is impossible. This endpoint now returns HTTP 410 Gone.
 
-    This endpoint is for process-restart recovery. For HITL persona selection,
-    use POST /sessions/{id}/companies/{cid}/personas/confirm instead.
+    For HITL persona selection, use POST
+    /sessions/{id}/companies/{cid}/personas/confirm — that path does not rely on
+    the checkpointer and works across the same process lifetime.
     """
-    rec = get_session_record(session_id)
-    if rec is None:
-        raise HTTPException(status_code=404, detail="Session not found")
-
-    if rec["status"] not in ("running", "awaiting_human", "failed"):
-        raise HTTPException(
-            status_code=409,
-            detail=f"Session cannot be resumed (status: {rec['status']})",
-        )
-
-    # Check if session is already active in memory
-    existing_active = get_active_session(session_id)
-    if existing_active and existing_active.task and not existing_active.task.done():
-        raise HTTPException(status_code=409, detail="Session is already running")
-
-    active = ActiveSession(session_id=session_id)
-    register_session(active)
-
-    async def _resume_task() -> None:
-        """Resume pipeline from checkpointed state — checkpointer managed inside task."""
-        from backend.pipeline import build_pipeline
-
-        config = {"configurable": {"thread_id": session_id}}
-        try:
-            update_session_record(session_id, "running")
-            await manager.broadcast(session_id, {
-                "type": "pipeline_resumed",
-                "session_id": session_id,
-            })
-
-            checkpointer = active.checkpointer
-            graph = build_pipeline(checkpointer=checkpointer)
-
-            # Pass None to resume from checkpointed state
-            final_state: dict = {}
-            async for chunk in graph.astream(None, config=config):  # type: ignore[arg-type]
-                for node_name, node_output in chunk.items():
-                    if not isinstance(node_output, dict):
-                        continue
-                    for company_id, cs in node_output.get("company_states", {}).items():
-                        if not isinstance(cs, dict):
-                            continue
-                        stage = cs.get("current_stage", "")
-                        status = _status_value(cs.get("status", "running"))
-                        await manager.broadcast_stage_update(
-                            session_id, company_id, stage, status, company_state=cs
-                        )
-                    _merge_chunk(final_state, node_output)
-
-            active.last_state = final_state
-
-            awaiting = {}
-            for company_id, cs in final_state.get("company_states", {}).items():
-                if isinstance(cs, dict) and cs.get("current_stage") == "awaiting_persona_selection":
-                    awaiting[company_id] = cs.get("generated_personas", [])
-
-            if awaiting:
-                active.awaiting_persona_selection = True
-                update_session_record(session_id, "awaiting_human")
-                await manager.broadcast_hitl_required(session_id, awaiting)
-            else:
-                update_session_record(session_id, "completed")
-                await manager.broadcast_pipeline_complete(session_id)
-        except Exception as exc:
-            err_msg = str(exc)
-            update_session_record(session_id, "failed", error_message=err_msg)
-            await manager.broadcast_error(session_id, err_msg)
-
-    task = asyncio.create_task(_resume_task())
-    active.task = task
-
-    return {
-        "message": "Session resuming from checkpoint",
-        "session_id": session_id,
-    }
+    raise HTTPException(
+        status_code=410,
+        detail=(
+            "Resume-after-restart is no longer supported. Sessions use an "
+            "in-memory checkpointer and cannot be resumed across process "
+            "restarts. Start a new session instead."
+        ),
+    )
 
 
 @router.get("", response_model=list[dict])

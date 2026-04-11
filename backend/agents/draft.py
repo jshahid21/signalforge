@@ -368,6 +368,21 @@ async def run_drafts_for_company(
         # No personas selected — fall back to all generated
         personas_to_draft = list(all_personas.values())
 
+    # Budget reservation (issue #8 bug 3): drafts run concurrently and each
+    # run_draft only checks the pre-dispatch snapshot of current_total_cost, so
+    # N parallel drafts could all pass the check and collectively exceed the
+    # session budget. Cap the number of concurrent drafts to what the remaining
+    # budget can actually afford. This may slightly under-draft (e.g. when a
+    # draft hits the confidence gate and costs nothing), but it can never
+    # overspend.
+    budget_remaining = max_budget_usd - current_total_cost
+    if _LLM_COST > 0:
+        max_affordable_drafts = max(0, int(budget_remaining // _LLM_COST))
+    else:
+        max_affordable_drafts = len(personas_to_draft)
+    if len(personas_to_draft) > max_affordable_drafts:
+        personas_to_draft = personas_to_draft[:max_affordable_drafts]
+
     existing_drafts = dict(cs.get("drafts", {}))
 
     draft_tasks = [

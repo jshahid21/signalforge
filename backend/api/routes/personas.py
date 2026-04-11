@@ -124,42 +124,86 @@ async def confirm_persona_selection(
             total_cost = 0.0
 
             from backend.models.enums import PipelineStatus
+
+            # Track per-company outcome for final session status propagation
+            # (issue #8 bug 4). Only companies that were actually dispatched
+            # into synthesis are considered.
+            processed_ids: list[str] = []
+            failed_ids: list[str] = []
+
+            def _is_failed(state: dict) -> bool:
+                return state.get("status") in (PipelineStatus.FAILED, "failed")
+
             for cid, cstate in states.items():
                 if cstate.get("current_stage") != "synthesis":
                     continue
 
+                processed_ids.append(cid)
                 await manager.broadcast_stage_update(session_id, cid, "synthesis", "running", company_state=cstate)
 
-                cstate, synth_cost = await run_synthesis(
-                    cs=cstate,
-                    llm_provider=llm_provider,
-                    llm_model=llm_model,
-                    current_total_cost=current_cost + total_cost,
-                    max_budget_usd=max_budget,
-                )
+                try:
+                    cstate, synth_cost = await run_synthesis(
+                        cs=cstate,
+                        llm_provider=llm_provider,
+                        llm_model=llm_model,
+                        current_total_cost=current_cost + total_cost,
+                        max_budget_usd=max_budget,
+                    )
+                except Exception as synth_exc:
+                    logger.error(
+                        "Synthesis crashed for session %s company %s: %s",
+                        session_id, cid, synth_exc,
+                    )
+                    cstate = dict(cstate)
+                    cstate["status"] = PipelineStatus.FAILED
+                    cstate["error_message"] = f"synthesis: {synth_exc}"
+                    states[cid] = cstate
+                    failed_ids.append(cid)
+                    await manager.broadcast_stage_update(session_id, cid, "synthesis", "failed")
+                    continue
+
                 total_cost += synth_cost
 
-                if cstate.get("status") in (PipelineStatus.FAILED, "failed"):
+                if _is_failed(cstate):
                     states[cid] = cstate
+                    failed_ids.append(cid)
                     await manager.broadcast_stage_update(session_id, cid, "synthesis", "failed")
                     continue
 
                 await manager.broadcast_stage_update(session_id, cid, "draft", "running", company_state=cstate)
 
                 few_shot = get_few_shot_examples(limit=2)
-                cstate, draft_cost = await run_drafts_for_company(
-                    cs=cstate,
-                    seller_profile=seller_profile,
-                    llm_provider=llm_provider,
-                    llm_model=llm_model,
-                    current_total_cost=current_cost + total_cost,
-                    max_budget_usd=max_budget,
-                    few_shot_examples=few_shot,
-                )
+                try:
+                    cstate, draft_cost = await run_drafts_for_company(
+                        cs=cstate,
+                        seller_profile=seller_profile,
+                        llm_provider=llm_provider,
+                        llm_model=llm_model,
+                        current_total_cost=current_cost + total_cost,
+                        max_budget_usd=max_budget,
+                        few_shot_examples=few_shot,
+                    )
+                except Exception as draft_exc:
+                    logger.error(
+                        "Draft crashed for session %s company %s: %s",
+                        session_id, cid, draft_exc,
+                    )
+                    cstate = dict(cstate)
+                    cstate["status"] = PipelineStatus.FAILED
+                    cstate["error_message"] = f"draft: {draft_exc}"
+                    states[cid] = cstate
+                    failed_ids.append(cid)
+                    await manager.broadcast_stage_update(session_id, cid, "draft", "failed")
+                    continue
+
                 total_cost += draft_cost
                 states[cid] = cstate
 
-                status_str = "completed" if cstate.get("status") not in (PipelineStatus.FAILED, "failed") else "failed"
+                if _is_failed(cstate):
+                    failed_ids.append(cid)
+                    status_str = "failed"
+                else:
+                    status_str = "completed"
                 await manager.broadcast_stage_update(session_id, cid, "draft", status_str, company_state=cstate)
 
             # Update session state
@@ -168,15 +212,58 @@ async def confirm_persona_selection(
             active.last_state["total_cost_usd"] = current_cost + total_cost
 
             save_session_state(session_id, active.last_state)  # type: ignore[arg-type]
-            update_session_record(session_id, "completed")
+
+            # Derive session status from per-company outcomes across ALL
+            # companies in the session, not just those that went through the
+            # synthesis loop above (issue #8 bug 4, round 4). Companies that
+            # failed pre-HITL (e.g., during signal_ingestion) never reach the
+            # 'synthesis' current_stage, so processed_ids/failed_ids built by
+            # the loop above only cover post-HITL outcomes. Excluding pre-HITL
+            # failures from the session-status derivation would silently mark
+            # a mixed run as 'completed'. Scan all states here for the final
+            # accounting — this mirrors sessions.py::_run_pipeline_task.
+            all_processed = [cid for cid, cs in states.items() if isinstance(cs, dict)]
+            all_failed = [
+                cid for cid, cs in states.items()
+                if isinstance(cs, dict) and cs.get("status") in (PipelineStatus.FAILED, "failed")
+            ]
+
+            if not all_processed or not all_failed:
+                final_status = PipelineStatus.COMPLETED.value
+                err_msg = None
+            elif len(all_failed) == len(all_processed):
+                final_status = PipelineStatus.FAILED.value
+                err_msg = f"All companies failed: {', '.join(all_failed)}"
+            else:
+                final_status = PipelineStatus.PARTIAL.value
+                err_msg = (
+                    f"{len(all_failed)}/{len(all_processed)} companies failed: "
+                    f"{', '.join(all_failed)}"
+                )
+
+            update_session_record(session_id, final_status, error_message=err_msg)
+
+            # Broadcast pipeline_complete on ANY terminal state so the UI can
+            # finalize (stop spinners, enable actions). Failure details go out
+            # separately via broadcast_error so the UI can surface them without
+            # leaving the pipeline stuck in a non-terminal state.
+            if err_msg:
+                await manager.broadcast_error(session_id, err_msg)
             await manager.broadcast_pipeline_complete(session_id)
 
         except Exception as exc:
             import traceback
+            from backend.models.enums import PipelineStatus as _PipelineStatus
             logger.error("Synthesis phase failed for session %s: %s\n%s",
                          session_id, exc, traceback.format_exc())
-            update_session_record(session_id, "failed", error_message=str(exc))
+            update_session_record(
+                session_id, _PipelineStatus.FAILED.value, error_message=str(exc)
+            )
+            # Broadcast pipeline_complete on terminal state so the UI can
+            # finalize (stop spinners, enable actions). broadcast_error
+            # carries the failure detail.
             await manager.broadcast_error(session_id, str(exc))
+            await manager.broadcast_pipeline_complete(session_id)
 
     task = asyncio.create_task(_run_synthesis_phase())
     active.task = task

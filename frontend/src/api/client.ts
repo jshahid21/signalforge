@@ -18,6 +18,8 @@ export type PipelineStatus =
   | 'running'
   | 'awaiting_human'
   | 'completed'
+  // session-level terminal state — some companies succeeded, some failed
+  | 'partial'
   | 'failed'
   | 'skipped'
 

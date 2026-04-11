@@ -13,6 +13,8 @@ const STATUS_STYLES: Record<string, string> = {
   running: 'bg-blue-100 text-blue-700 animate-pulse',
   awaiting_human: 'bg-yellow-100 text-yellow-700',
   completed: 'bg-green-100 text-green-700',
+  // Mixed session outcome — some companies succeeded, some failed.
+  partial: 'bg-amber-100 text-amber-700',
   failed: 'bg-red-100 text-red-700',
   skipped: 'bg-gray-100 text-gray-500',
 }
@@ -22,6 +24,7 @@ const STATUS_LABELS: Record<string, string> = {
   running: 'Running',
   awaiting_human: 'Awaiting',
   completed: 'Done',
+  partial: 'Partial',
   failed: 'Failed',
   skipped: 'Skipped',
 }
@@ -93,6 +96,11 @@ interface Props {
   onSelectCompany: (id: string) => void
 }
 
+// NOTE: 'partial' is intentionally NOT in this list. It is a session-level
+// terminal status only — per-company states are always completed or failed,
+// so filtering the company table by 'partial' would always return empty.
+// 'partial' stays in STATUS_STYLES / STATUS_LABELS because App.tsx reuses
+// the badge for session-level status display.
 const STATUS_FILTER_OPTIONS: Array<{ value: string; label: string }> = [
   { value: '', label: 'All' },
   { value: 'running', label: 'Running' },

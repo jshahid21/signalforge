@@ -211,25 +211,19 @@ def build_pipeline(checkpointer=None):
     Graph topology:
         orchestrator → [dispatch_companies → Send("company_pipeline")] → hitl_gate → END
 
-    The hitl_gate node:
-    - Detects companies awaiting persona selection
-    - Calls interrupt() to pause the graph for human input
-    - On resume, applies selections and dispatches synthesis-only company_pipeline runs
-    - Requires a checkpointer to support interrupt/resume
+    The hitl_gate node is a pure signalling node: it detects companies awaiting
+    persona selection and returns the awaiting flag so the caller can exit the
+    graph and notify the UI. The graph does NOT call `interrupt()` — LangGraph
+    checkpointers cannot serialize the Send objects used on resume, so HITL
+    resume happens out of graph via `/sessions/.../personas/confirm`, which
+    drives `run_synthesis` + `run_drafts_for_company` directly.
 
     Args:
-        checkpointer: LangGraph checkpointer. Defaults to MemorySaver if None.
-                     Pass AsyncSqliteSaver for persistent session storage.
-
-    Usage with HITL:
-        config = {"configurable": {"thread_id": "<unique-id>"}}
-        # First invocation — may pause at hitl_gate
-        result = await graph.ainvoke(initial_state, config=config)
-        # Resume with persona selections: {company_id: [persona_id, ...]}
-        result = await graph.ainvoke(
-            Command(resume={"stripe": ["persona-id-1", "persona-id-2"]}),
-            config=config,
-        )
+        checkpointer: LangGraph checkpointer. Optional; `None` is fine for the
+                      normal run, since the run completes before exiting the
+                      graph and HITL resume does not re-enter the graph.
+                      Historically this slot held `AsyncSqliteSaver` for
+                      cross-restart resume — that feature has been removed.
     """
     graph = StateGraph(AgentState)
 
