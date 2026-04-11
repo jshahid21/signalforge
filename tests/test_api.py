@@ -651,6 +651,119 @@ class TestPersonaConfirmFailurePropagation:
         assert "error" in event_types
         assert "pipeline_complete" in event_types
 
+    async def test_pre_hitl_failure_plus_post_hitl_success_marks_partial(
+        self, client, monkeypatch
+    ) -> None:
+        """Round-4 regression: the personas.py final-status derivation must
+        consider ALL companies in the session, not just the ones that went
+        through the synthesis loop. If company A failed pre-HITL
+        (e.g., during signal_ingestion) and company B reached HITL and
+        synthesized successfully, the session must be marked 'partial' —
+        not 'completed'.
+        """
+        from backend.api import (
+            session_store,
+            websocket as ws_module,
+        )
+        from backend.models.enums import PipelineStatus
+
+        session_id = "sess-pre-hitl-mixed"
+        session_store.create_session_record(session_id, ["alpha", "beta"], {})
+
+        # alpha failed during signal_ingestion (pre-HITL). It never reaches
+        # the HITL gate and its current_stage stays at its pre-HITL value.
+        # beta reached the HITL gate and is awaiting persona selection.
+        states = {
+            "alpha": {
+                "company_id": "alpha",
+                "company_name": "Alpha",
+                "status": PipelineStatus.FAILED,
+                "current_stage": "signal_ingestion",
+                "generated_personas": [],
+                "selected_personas": [],
+                "drafts": {},
+            },
+            "beta": {
+                "company_id": "beta",
+                "company_name": "Beta",
+                "status": PipelineStatus.AWAITING_HUMAN,
+                "current_stage": "awaiting_persona_selection",
+                "generated_personas": [
+                    {
+                        "persona_id": "p1",
+                        "title": "VP Eng",
+                        "targeting_reason": "owns platform",
+                        "role_type": "technical_buyer",
+                        "seniority_level": "vp",
+                        "priority_score": 0.9,
+                        "is_custom": False,
+                        "is_edited": False,
+                    }
+                ],
+                "selected_personas": [],
+                "drafts": {},
+            },
+        }
+        active = session_store.ActiveSession(session_id=session_id)
+        active.last_state = {"company_states": states, "total_cost_usd": 0.0}
+        active.awaiting_persona_selection = True
+        session_store.register_session(active)
+
+        async def _fake_synth(cs, **kwargs):
+            # beta succeeds in synthesis
+            cs = dict(cs)
+            cs["status"] = PipelineStatus.RUNNING
+            cs["current_stage"] = "draft"
+            return cs, 0.0
+
+        async def _fake_draft(cs, **kwargs):
+            cs = dict(cs)
+            cs["drafts"] = {"p1": {"draft_id": "d1"}}
+            return cs, 0.0
+
+        events: list[dict] = []
+
+        async def _capture_broadcast(sid: str, event: dict) -> None:
+            events.append(event)
+
+        monkeypatch.setattr("backend.agents.synthesis.run_synthesis", _fake_synth)
+        monkeypatch.setattr(
+            "backend.agents.draft.run_drafts_for_company", _fake_draft
+        )
+        monkeypatch.setattr(
+            "backend.agents.memory_agent.get_few_shot_examples", lambda limit=2: []
+        )
+        monkeypatch.setattr(ws_module.manager, "broadcast", _capture_broadcast)
+
+        # Confirm beta's personas — alpha is already failed and not awaiting,
+        # so still_awaiting will be empty and _run_synthesis_phase fires.
+        resp = await client.post(
+            f"/sessions/{session_id}/companies/beta/personas/confirm",
+            json={"selected_persona_ids": ["p1"]},
+        )
+        assert resp.status_code == 202
+
+        active = session_store.get_active_session(session_id)
+        assert active is not None and active.task is not None
+        await active.task
+
+        rec = session_store.get_session_record(session_id)
+        assert rec is not None
+        # The crux of the regression: session must be PARTIAL because alpha
+        # failed pre-HITL. Prior to the round-4 fix the synthesis-loop-only
+        # derivation returned COMPLETED because processed_ids=[beta],
+        # failed_ids=[] — alpha was never seen.
+        assert rec["status"] == PipelineStatus.PARTIAL.value, (
+            f"pre-HITL failure was ignored in final status derivation — "
+            f"expected 'partial', got {rec['status']!r}"
+        )
+        assert rec["error_message"] is not None
+        assert "alpha" in rec["error_message"]
+
+        event_types = {e.get("type") for e in events}
+        assert "error" in event_types
+        assert "pipeline_complete" in event_types
+
 
 class TestPipelineTaskHappyPathTerminalStatus:
     """Regression for PR #9 round-3 feedback: sessions.py::_run_pipeline_task

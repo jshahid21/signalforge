@@ -213,22 +213,33 @@ async def confirm_persona_selection(
 
             save_session_state(session_id, active.last_state)  # type: ignore[arg-type]
 
-            # Derive session status from per-company outcomes (issue #8 bug 4):
-            #   all succeeded → completed
-            #   all failed    → failed
-            #   mixed         → partial
-            if not processed_ids:
+            # Derive session status from per-company outcomes across ALL
+            # companies in the session, not just those that went through the
+            # synthesis loop above (issue #8 bug 4, round 4). Companies that
+            # failed pre-HITL (e.g., during signal_ingestion) never reach the
+            # 'synthesis' current_stage, so processed_ids/failed_ids built by
+            # the loop above only cover post-HITL outcomes. Excluding pre-HITL
+            # failures from the session-status derivation would silently mark
+            # a mixed run as 'completed'. Scan all states here for the final
+            # accounting — this mirrors sessions.py::_run_pipeline_task.
+            all_processed = [cid for cid, cs in states.items() if isinstance(cs, dict)]
+            all_failed = [
+                cid for cid, cs in states.items()
+                if isinstance(cs, dict) and cs.get("status") in (PipelineStatus.FAILED, "failed")
+            ]
+
+            if not all_processed or not all_failed:
                 final_status = PipelineStatus.COMPLETED.value
                 err_msg = None
-            elif not failed_ids:
-                final_status = PipelineStatus.COMPLETED.value
-                err_msg = None
-            elif len(failed_ids) == len(processed_ids):
+            elif len(all_failed) == len(all_processed):
                 final_status = PipelineStatus.FAILED.value
-                err_msg = f"All companies failed: {', '.join(failed_ids)}"
+                err_msg = f"All companies failed: {', '.join(all_failed)}"
             else:
                 final_status = PipelineStatus.PARTIAL.value
-                err_msg = f"{len(failed_ids)}/{len(processed_ids)} companies failed: {', '.join(failed_ids)}"
+                err_msg = (
+                    f"{len(all_failed)}/{len(all_processed)} companies failed: "
+                    f"{', '.join(all_failed)}"
+                )
 
             update_session_record(session_id, final_status, error_message=err_msg)
 
