@@ -13,6 +13,8 @@ const STATUS_STYLES: Record<string, string> = {
   running: 'bg-blue-100 text-blue-700 animate-pulse',
   awaiting_human: 'bg-yellow-100 text-yellow-700',
   completed: 'bg-green-100 text-green-700',
+  // Mixed session outcome — some companies succeeded, some failed.
+  partial: 'bg-amber-100 text-amber-700',
   failed: 'bg-red-100 text-red-700',
   skipped: 'bg-gray-100 text-gray-500',
 }
@@ -22,6 +24,7 @@ const STATUS_LABELS: Record<string, string> = {
   running: 'Running',
   awaiting_human: 'Awaiting',
   completed: 'Done',
+  partial: 'Partial',
   failed: 'Failed',
   skipped: 'Skipped',
 }
@@ -98,6 +101,7 @@ const STATUS_FILTER_OPTIONS: Array<{ value: string; label: string }> = [
   { value: 'running', label: 'Running' },
   { value: 'awaiting_human', label: 'Awaiting' },
   { value: 'completed', label: 'Done' },
+  { value: 'partial', label: 'Partial' },
   { value: 'failed', label: 'Failed' },
   { value: 'skipped', label: 'Skipped' },
   { value: 'pending', label: 'Pending' },

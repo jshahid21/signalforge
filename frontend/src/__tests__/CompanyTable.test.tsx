@@ -13,11 +13,17 @@ describe('StatusBadge', () => {
     ['running', 'Running'],
     ['awaiting_human', 'Awaiting'],
     ['completed', 'Done'],
+    ['partial', 'Partial'],
     ['failed', 'Failed'],
     ['skipped', 'Skipped'],
   ])('renders correct label for status "%s"', (status, label) => {
     render(<StatusBadge status={status} />)
     expect(screen.getByText(label)).toBeInTheDocument()
+  })
+
+  it('applies correct color class for partial status', () => {
+    const { container } = render(<StatusBadge status="partial" />)
+    expect(container.firstChild).toHaveClass('bg-amber-100')
   })
 
   it('applies correct color class for completed status', () => {

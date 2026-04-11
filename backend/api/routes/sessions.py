@@ -162,8 +162,11 @@ async def _run_pipeline_task(
             session_id, exc, traceback.format_exc()
         )
         err_msg = str(exc)
-        update_session_record(session_id, "failed", error_message=err_msg)
+        update_session_record(session_id, PipelineStatus.FAILED.value, error_message=err_msg)
+        # Broadcast pipeline_complete on terminal state so the UI can finalize
+        # (stop spinners, enable actions). broadcast_error carries the detail.
         await manager.broadcast_error(session_id, err_msg)
+        await manager.broadcast_pipeline_complete(session_id)
 
 
 @router.post("", response_model=SessionResponse, status_code=201)

@@ -218,26 +218,27 @@ async def confirm_persona_selection(
             #   all failed    → failed
             #   mixed         → partial
             if not processed_ids:
-                final_status = "completed"
+                final_status = PipelineStatus.COMPLETED.value
                 err_msg = None
             elif not failed_ids:
-                final_status = "completed"
+                final_status = PipelineStatus.COMPLETED.value
                 err_msg = None
             elif len(failed_ids) == len(processed_ids):
-                final_status = "failed"
+                final_status = PipelineStatus.FAILED.value
                 err_msg = f"All companies failed: {', '.join(failed_ids)}"
             else:
-                final_status = "partial"
+                final_status = PipelineStatus.PARTIAL.value
                 err_msg = f"{len(failed_ids)}/{len(processed_ids)} companies failed: {', '.join(failed_ids)}"
 
             update_session_record(session_id, final_status, error_message=err_msg)
-            if final_status == "completed":
-                await manager.broadcast_pipeline_complete(session_id)
-            else:
-                await manager.broadcast_error(
-                    session_id,
-                    err_msg or f"session finished with status {final_status}",
-                )
+
+            # Broadcast pipeline_complete on ANY terminal state so the UI can
+            # finalize (stop spinners, enable actions). Failure details go out
+            # separately via broadcast_error so the UI can surface them without
+            # leaving the pipeline stuck in a non-terminal state.
+            if err_msg:
+                await manager.broadcast_error(session_id, err_msg)
+            await manager.broadcast_pipeline_complete(session_id)
 
         except Exception as exc:
             import traceback

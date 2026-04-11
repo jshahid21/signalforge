@@ -535,7 +535,7 @@ class TestPersonaConfirmFailurePropagation:
     ) -> None:
         from unittest.mock import AsyncMock
 
-        from backend.api import session_store
+        from backend.api import session_store, websocket as ws_module
         from backend.models.enums import PipelineStatus
 
         self._setup_awaiting_session("sess-fail-all", ["acme"])
@@ -548,6 +548,13 @@ class TestPersonaConfirmFailurePropagation:
         async def _fake_draft(cs, **kwargs):
             return cs, 0.0
 
+        # Capture broadcast events so we can assert the terminal pipeline_complete
+        # is emitted alongside the error broadcast.
+        events: list[dict] = []
+
+        async def _capture_broadcast(session_id: str, event: dict) -> None:
+            events.append(event)
+
         monkeypatch.setattr("backend.agents.synthesis.run_synthesis", _fake_synth)
         monkeypatch.setattr(
             "backend.agents.draft.run_drafts_for_company", _fake_draft
@@ -555,6 +562,7 @@ class TestPersonaConfirmFailurePropagation:
         monkeypatch.setattr(
             "backend.agents.memory_agent.get_few_shot_examples", lambda limit=2: []
         )
+        monkeypatch.setattr(ws_module.manager, "broadcast", _capture_broadcast)
 
         resp = await client.post(
             "/sessions/sess-fail-all/companies/acme/personas/confirm",
@@ -569,15 +577,20 @@ class TestPersonaConfirmFailurePropagation:
 
         rec = session_store.get_session_record("sess-fail-all")
         assert rec is not None
-        assert rec["status"] == "failed"
+        assert rec["status"] == PipelineStatus.FAILED.value
         assert rec["error_message"] is not None
+
+        # Must broadcast BOTH error and pipeline_complete so the UI can finalize
+        event_types = {e.get("type") for e in events}
+        assert "error" in event_types
+        assert "pipeline_complete" in event_types
 
     async def test_partial_failure_marks_session_partial(
         self, client, monkeypatch
     ) -> None:
         from unittest.mock import AsyncMock
 
-        from backend.api import session_store
+        from backend.api import session_store, websocket as ws_module
         from backend.models.enums import PipelineStatus
 
         self._setup_awaiting_session("sess-partial", ["acme", "globex"])
@@ -604,6 +617,11 @@ class TestPersonaConfirmFailurePropagation:
             cs["drafts"] = {"p1": {"draft_id": "d1"}}
             return cs, 0.0
 
+        events: list[dict] = []
+
+        async def _capture_broadcast(session_id: str, event: dict) -> None:
+            events.append(event)
+
         monkeypatch.setattr("backend.agents.synthesis.run_synthesis", _fake_synth)
         monkeypatch.setattr(
             "backend.agents.draft.run_drafts_for_company", _fake_draft
@@ -611,6 +629,7 @@ class TestPersonaConfirmFailurePropagation:
         monkeypatch.setattr(
             "backend.agents.memory_agent.get_few_shot_examples", lambda limit=2: []
         )
+        monkeypatch.setattr(ws_module.manager, "broadcast", _capture_broadcast)
 
         resp2 = await client.post(
             "/sessions/sess-partial/companies/globex/personas/confirm",
@@ -624,8 +643,78 @@ class TestPersonaConfirmFailurePropagation:
 
         rec = session_store.get_session_record("sess-partial")
         assert rec is not None
-        assert rec["status"] == "partial"
+        assert rec["status"] == PipelineStatus.PARTIAL.value
         assert "globex" in (rec["error_message"] or "")
+
+        # Must broadcast BOTH error and pipeline_complete on partial terminal
+        event_types = {e.get("type") for e in events}
+        assert "error" in event_types
+        assert "pipeline_complete" in event_types
+
+
+class TestPipelineTaskExceptBroadcast:
+    """Regression for PR #9 iteration feedback: sessions.py _run_pipeline_task
+    must broadcast pipeline_complete (in addition to broadcast_error) from its
+    except block, so the UI can finalize on terminal state after a crash.
+    """
+
+    async def test_pipeline_task_except_broadcasts_pipeline_complete(
+        self, monkeypatch
+    ) -> None:
+        from backend.api import session_store, websocket as ws_module
+        from backend.api.routes.sessions import _run_pipeline_task
+        from backend.models.enums import PipelineStatus
+        from backend.models.state import AgentState, SellerProfile
+
+        # Register an active session so _run_pipeline_task doesn't early-return
+        session_id = "sess-pipeline-crash"
+        session_store.create_session_record(session_id, ["Stripe"], {})
+        active = session_store.ActiveSession(session_id=session_id)
+        session_store.register_session(active)
+
+        events: list[dict] = []
+
+        async def _capture_broadcast(sid: str, event: dict) -> None:
+            events.append(event)
+
+        monkeypatch.setattr(ws_module.manager, "broadcast", _capture_broadcast)
+
+        # Force an exception deep inside the task by making build_pipeline raise
+        def _boom(*args, **kwargs):
+            raise RuntimeError("synthetic pipeline crash")
+
+        monkeypatch.setattr("backend.pipeline.build_pipeline", _boom)
+
+        initial_state = AgentState(
+            target_companies=["Stripe"],
+            seller_profile=SellerProfile(
+                company_name="", portfolio_summary="", portfolio_items=[]
+            ),
+            company_states={},
+            pipeline_started_at="",
+            pipeline_completed_at=None,
+            active_company_ids=[],
+            completed_company_ids=[],
+            failed_company_ids=[],
+            awaiting_persona_selection=False,
+            awaiting_review=[],
+            execution_log=[],
+            total_cost_usd=0.0,
+            final_drafts=[],
+        )
+
+        await _run_pipeline_task(session_id, initial_state)
+
+        # Session record must reflect terminal failure
+        rec = session_store.get_session_record(session_id)
+        assert rec is not None
+        assert rec["status"] == PipelineStatus.FAILED.value
+        assert rec["error_message"] is not None
+
+        # Must broadcast BOTH error and pipeline_complete (terminal state)
+        event_types = {e.get("type") for e in events}
+        assert "error" in event_types
+        assert "pipeline_complete" in event_types
 
 
 # ---------------------------------------------------------------------------

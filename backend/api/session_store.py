@@ -152,6 +152,8 @@ def update_session_record(
         if rec is None:
             return
         rec.status = status
+        # Terminal session statuses stamp completed_at. Keep this list in sync
+        # with the PipelineStatus enum's terminal values.
         if status in ("completed", "failed", "partial"):
             rec.completed_at = datetime.now(timezone.utc)
         if error_message:
