@@ -364,11 +364,15 @@ class TestRunSignalIngestion:
         mock_tavily.search.assert_not_called()
 
     @pytest.mark.asyncio
-    @pytest.mark.skip(reason="FLAKY: Tavily called 3 times instead of 1 — tier-2 trigger logic changed; skipped pending investigation")  # noqa: E501
     async def test_ambiguity_triggers_tier2_when_density_sufficient(
         self, mock_jsearch: AsyncMock, mock_tavily: AsyncMock
     ) -> None:
-        """Tier 2 triggered by ambiguity > 0.7 even when density >= 3 (spec §7.1)."""
+        """Tier 2 triggered by ambiguity > 0.7 even when density >= 3 (spec §7.1).
+
+        Tier 2 fires 3 parallel Tavily queries (issue #8 bug 2 regression guard).
+        """
+        from backend.agents.signal_ingestion import _TIER_2_QUERIES_PER_CALL
+
         cs = _make_company_state("stripe")
         cap_map = _make_mock_capability_map(["kubernetes", "ml platform", "data warehouse"])
 
@@ -393,8 +397,12 @@ class TestRunSignalIngestion:
                 llm_model="claude-sonnet-4-6",
             )
 
-        # ambiguity = 1 - mean(0.1, 0.1) = 0.9 > 0.7 → Tier 2 triggered
-        mock_tavily.search.assert_called_once()
+        # ambiguity = 1 - mean(0.1, 0.1) = 0.9 > 0.7 → Tier 2 triggered.
+        # Tier 2 fires N parallel queries.
+        assert mock_tavily.search.call_count == _TIER_2_QUERIES_PER_CALL
+        # Assert the queries are distinct (meaningful parallelism, not duplicates).
+        call_queries = [call.args[0] if call.args else call.kwargs.get("query") for call in mock_tavily.search.call_args_list]
+        assert len(set(call_queries)) == _TIER_2_QUERIES_PER_CALL, f"Expected distinct queries, got {call_queries}"
         reasons = " ".join(updated_cs["cost_metadata"]["tier_escalation_reasons"])
         assert "ambiguity" in reasons
 

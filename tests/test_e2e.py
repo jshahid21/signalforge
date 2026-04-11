@@ -196,7 +196,6 @@ def _patch_all_agents(
 
 
 @pytest.mark.asyncio
-@pytest.mark.skip(reason="FLAKY: TypeError: Type is not msgpack serializable: Send — langgraph checkpointer incompatibility; skipped pending investigation")  # noqa: E501
 async def test_full_pipeline_run_langchain_fixture():
     """Full pipeline run against LangChain mock data.
 
@@ -206,9 +205,7 @@ async def test_full_pipeline_run_langchain_fixture():
 
     HITL is bypassed by pre-populating selected_personas.
     """
-    from langgraph.checkpoint.memory import MemorySaver
-
-    graph = build_pipeline(checkpointer=MemorySaver())
+    graph = build_pipeline(checkpointer=None)
     initial_state = _make_initial_state(["LangChain"])
     config = {"configurable": {"thread_id": "e2e-test-langchain-001"}}
 
@@ -244,12 +241,9 @@ async def test_full_pipeline_run_langchain_fixture():
 
 
 @pytest.mark.asyncio
-@pytest.mark.skip(reason="FLAKY: TypeError: Type is not msgpack serializable: Send — langgraph checkpointer incompatibility; skipped pending investigation")  # noqa: E501
 async def test_full_pipeline_skips_unqualified_company():
     """Company with no matching signals gets SKIPPED status."""
-    from langgraph.checkpoint.memory import MemorySaver
-
-    graph = build_pipeline(checkpointer=MemorySaver())
+    graph = build_pipeline(checkpointer=None)
     initial_state = _make_initial_state(["Staples"])
     config = {"configurable": {"thread_id": "e2e-test-unqualified-001"}}
 
@@ -281,20 +275,18 @@ async def test_full_pipeline_skips_unqualified_company():
 
 
 @pytest.mark.asyncio
-@pytest.mark.skip(reason="FLAKY: TypeError: Type is not msgpack serializable: Send — langgraph checkpointer incompatibility; skipped pending investigation")  # noqa: E501
 async def test_hitl_pause_and_resume():
-    """Pipeline pauses at HITL gate, then resumes after user selects personas.
+    """Pipeline pauses at HITL gate, then resumes via out-of-graph direct calls.
 
-    Flow:
-    1. First invoke → pipeline pauses, company status = AWAITING_HUMAN
-    2. Second invoke with Command(resume=...) → synthesis + drafts run
-    3. Company status = COMPLETED (or drafts populated)
+    Flow (new direct-call pattern — no langgraph interrupt/resume):
+    1. First invoke → pipeline runs through persona_generation, company ends
+       up AWAITING_HUMAN when the company_pipeline node returns early; the
+       hitl_gate_node reports awaiting companies via `awaiting_review`.
+    2. The application layer (simulated here) calls `apply_persona_selection`
+       and then drives synthesis/drafts directly — NOT by re-invoking the graph.
+    3. Company status progresses past AWAITING_HUMAN.
     """
-    from langgraph.checkpoint.memory import MemorySaver
-    from langgraph.types import Command
-
-    checkpointer = MemorySaver()
-    graph = build_pipeline(checkpointer=checkpointer)
+    graph = build_pipeline(checkpointer=None)
     initial_state = _make_initial_state(["LangChain"])
     config = {"configurable": {"thread_id": "e2e-test-hitl-001"}}
 
@@ -342,8 +334,14 @@ async def test_hitl_pause_and_resume():
         PipelineStatus.FAILED,
     )
 
-    # If it paused for HITL, simulate resume
+    # If it paused for HITL, simulate out-of-graph resume via direct calls.
+    # The real `/personas/confirm` endpoint does exactly this: it calls
+    # apply_persona_selection → run_synthesis → run_drafts_for_company.
     if cs_after_first["status"] == PipelineStatus.AWAITING_HUMAN:
+        from backend.agents.draft import run_drafts_for_company
+        from backend.agents.hitl_gate import apply_persona_selection
+        from backend.agents.synthesis import run_synthesis
+
         generated = cs_after_first.get("generated_personas", [])
         persona_ids = [p["persona_id"] for p in generated[:1]]  # Select first persona
 
@@ -364,25 +362,35 @@ async def test_hitl_pause_and_resume():
 
         mock_llm_second.ainvoke = _ainvoke_second
 
-        resume_payload = {"langchain": persona_ids}
+        # Apply selection — no graph re-invoke, direct call.
+        cs_resumed = apply_persona_selection(cs_after_first, persona_ids)
+        assert set(cs_resumed["selected_personas"]) == set(persona_ids)
+        assert cs_resumed["current_stage"] == "synthesis"
+
         with (
-            patch("backend.tools.tavily.TavilySearchClient.__init__", return_value=None),
             patch("backend.agents.synthesis.ChatAnthropic", new=MagicMock(return_value=mock_llm_second)),
             patch("backend.agents.draft.ChatAnthropic", new=MagicMock(return_value=mock_llm_second)),
-            patch("backend.agents.memory_agent.get_few_shot_examples", return_value=[]),
         ):
-            result2 = await graph.ainvoke(Command(resume=resume_payload), config=config)
+            cs_resumed, _ = await run_synthesis(
+                cs=cs_resumed,
+                llm_provider="anthropic",
+                llm_model="claude-sonnet-4-6",
+                current_total_cost=0.0,
+                max_budget_usd=10.0,
+            )
+            cs_resumed, _ = await run_drafts_for_company(
+                cs=cs_resumed,
+                seller_profile={"company_name": "Seller", "portfolio_summary": "Tools", "portfolio_items": []},
+                llm_provider="anthropic",
+                llm_model="claude-sonnet-4-6",
+                current_total_cost=0.0,
+                max_budget_usd=10.0,
+                few_shot_examples=[],
+            )
 
-        assert "langchain" in result2["company_states"]
-        cs_after_resume = result2["company_states"]["langchain"]
-        # After resume, company progressed past AWAITING_HUMAN
-        assert cs_after_resume["status"] != PipelineStatus.AWAITING_HUMAN
-        # And selected_personas was applied
-        assert len(cs_after_resume.get("selected_personas", [])) > 0 or cs_after_resume["status"] in (
-            PipelineStatus.COMPLETED,
-            PipelineStatus.FAILED,
-            PipelineStatus.RUNNING,  # Synthesis/draft in progress
-        )
+        # After out-of-graph resume, company progressed past AWAITING_HUMAN.
+        assert cs_resumed["status"] != PipelineStatus.AWAITING_HUMAN
+        assert cs_resumed["current_stage"] == "done"
 
 
 # ---------------------------------------------------------------------------
@@ -391,7 +399,6 @@ async def test_hitl_pause_and_resume():
 
 
 @pytest.mark.asyncio
-@pytest.mark.skip(reason="FLAKY: TypeError: Type is not msgpack serializable: Send — langgraph checkpointer incompatibility; skipped pending investigation")  # noqa: E501
 async def test_memory_injection_passes_few_shot_examples():
     """Prior approved drafts are injected as few-shot examples into draft generation.
 

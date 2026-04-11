@@ -396,9 +396,8 @@ async def test_all_research_subtasks_succeed():
 
 
 @pytest.mark.asyncio
-@pytest.mark.skip(reason="FLAKY: confidence gate changed; confidence=45 now generates hedged draft instead of skipping; skipped pending investigation")  # noqa: E501
 async def test_low_confidence_no_draft_generated():
-    """Confidence < 60 → draft not generated, human_review_required = True."""
+    """Confidence < 35 (hard gate) → draft not generated, human_review_required = True."""
     from backend.agents.draft import run_drafts_for_company
 
     persona_id = "persona-abc"
@@ -410,7 +409,7 @@ async def test_low_confidence_no_draft_generated():
         core_problem="Unclear scaling challenges",
         solution_areas=["cloud_infra"],
         inferred_areas=[],
-        confidence_score=45,  # Below 60 threshold
+        confidence_score=25,  # Below 35 hard-gate threshold
         reasoning="Insufficient signal specificity",
     )
     cs["synthesis_outputs"] = {
