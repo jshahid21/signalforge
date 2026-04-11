@@ -135,17 +135,18 @@ class TestApplyPersonaSelection:
         assert updated["current_stage"] == "synthesis"
 
     @pytest.mark.asyncio
-    @pytest.mark.skip(reason="FLAKY: hitl_gate_node returns dict instead of Command — langgraph.types.interrupt mock not working correctly; skipped pending investigation")  # noqa: E501
     async def test_empty_selection_does_not_advance_stage_in_gate(self) -> None:
-        """hitl_gate_node skips companies with empty selections (no full re-run).
+        """hitl_gate_node reports awaiting companies without advancing any stage.
 
-        When resume payload omits a company (empty list), the company remains
-        AWAITING_HUMAN. This prevents hitl_gate from dispatching a Send() with
-        empty selected_personas, which would trigger a full pipeline re-run.
+        Under the new direct-call pattern (no langgraph.interrupt/Command resume),
+        hitl_gate_node is a pure signalling node: it returns the list of companies
+        awaiting persona selection so the application layer can pause and notify
+        the UI. Companies that have not yet had `apply_persona_selection` called
+        must remain AWAITING_HUMAN — the gate node itself must never advance a
+        company's stage or dispatch Send() objects (regression guard against the
+        old interrupt()/Command(resume=...) flow which could not serialize Send).
         """
-        from unittest.mock import AsyncMock, MagicMock, patch
-
-        # Two companies: company1 gets selection, company2 gets nothing
+        # Two companies, both marked awaiting persona selection.
         cs1 = _make_company_state()
         cs2 = dict(_make_company_state())
         cs2["company_id"] = "company2"
@@ -157,8 +158,6 @@ class TestApplyPersonaSelection:
         cs1 = run_persona_selection_gate(cs1)
         cs2 = run_persona_selection_gate(cs2)  # type: ignore[assignment]
 
-        persona_id = cs1["generated_personas"][0]["persona_id"]
-
         from backend.models.state import AgentState
         state = AgentState(
             target_companies=["stripe", "company2"],
@@ -169,39 +168,36 @@ class TestApplyPersonaSelection:
             active_company_ids=[],
             completed_company_ids=[],
             failed_company_ids=[],
-            awaiting_persona_selection=True,
+            awaiting_persona_selection=False,
             awaiting_review=[],
             execution_log=[],
             total_cost_usd=0.0,
             final_drafts=[],
         )
 
-        # Resume with selection for company1 only — company2 omitted
-        resume_payload = {"stripe": [persona_id]}
-
         from backend.agents.hitl_gate import hitl_gate_node
 
-        with (
-            patch("langgraph.types.interrupt", return_value=resume_payload),
-            patch("backend.config.loader.load_config") as mock_cfg,
-            patch("backend.config.capability_map.load_capability_map", return_value=None),
-        ):
-            mock_cfg.return_value.session_budget.max_usd = 1.0
-            mock_cfg.return_value.api_keys.jsearch = ""
-            mock_cfg.return_value.api_keys.tavily = ""
-            mock_cfg.return_value.api_keys.llm_provider = "anthropic"
-            mock_cfg.return_value.api_keys.llm_model = "claude-sonnet-4-6"
+        result = await hitl_gate_node(state)
 
-            result = await hitl_gate_node(state)
+        # Contract: plain dict, not a Command. Graph does not dispatch Send() here.
+        assert isinstance(result, dict)
+        assert result["awaiting_persona_selection"] is True
+        assert set(result["awaiting_review"]) == {"stripe", "company2"}
+        # The gate must not mutate company_states or advance stages.
+        assert "company_states" not in result
+        # Both companies stay AWAITING_HUMAN until apply_persona_selection is called.
+        assert cs1["status"] == PipelineStatus.AWAITING_HUMAN
+        assert cs2["status"] == PipelineStatus.AWAITING_HUMAN
 
-        from langgraph.types import Command
-        assert isinstance(result, Command)
-        # Only stripe should have been dispatched
-        assert len(result.goto) == 1
-        # company2 should remain AWAITING_HUMAN in updated_states
-        updated_states = result.update.get("company_states", {})
-        assert "company2" in updated_states
-        assert updated_states["company2"]["status"] == PipelineStatus.AWAITING_HUMAN
+        # Simulate the endpoint applying selection to company1 only.
+        persona_id = cs1["generated_personas"][0]["persona_id"]
+        advanced_cs1 = apply_persona_selection(cs1, [persona_id])
+
+        # company1 advanced, company2 untouched → still AWAITING_HUMAN.
+        assert advanced_cs1["status"] == PipelineStatus.RUNNING
+        assert advanced_cs1["current_stage"] == "synthesis"
+        assert cs2["status"] == PipelineStatus.AWAITING_HUMAN
+        assert cs2["current_stage"] == "awaiting_persona_selection"
 
 
 class TestHITLPauseResumeCycle:

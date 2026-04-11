@@ -215,13 +215,11 @@ class TestRunResearch:
 
 class TestTechStackExtraction:
     @pytest.mark.asyncio
-    @pytest.mark.skip(reason="FLAKY: signature mismatch — function now requires (signals_content, llm_provider, llm_model), test passes 2 args; skipped pending investigation")  # noqa: E501
     async def test_returns_empty_list_with_no_model(self) -> None:
-        result = await _run_tech_stack_extraction("kubernetes deployment", "")
+        result = await _run_tech_stack_extraction("kubernetes deployment", "anthropic", "")
         assert result == []
 
     @pytest.mark.asyncio
-    @pytest.mark.skip(reason="FLAKY: signature mismatch — function now requires (signals_content, llm_provider, llm_model), test passes 2 args; skipped pending investigation")  # noqa: E501
     async def test_returns_empty_list_on_empty_content(self) -> None:
-        result = await _run_tech_stack_extraction("", "claude-sonnet-4-6")
+        result = await _run_tech_stack_extraction("", "anthropic", "claude-sonnet-4-6")
         assert result == []

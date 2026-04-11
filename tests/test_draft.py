@@ -116,10 +116,9 @@ _SELLER_PROFILE = SellerProfile(
 
 class TestConfidenceGateBoundary:
     @pytest.mark.asyncio
-    @pytest.mark.skip(reason="FLAKY: confidence gate changed from 60 to 35; test expects draft=None at confidence=59 but impl now generates hedged draft; skipped pending investigation")  # noqa: E501
-    async def test_confidence_59_skips_draft(self) -> None:
-        """confidence_score = 59 (< 60) → draft NOT generated."""
-        cs = _make_company_state(confidence_score=59)
+    async def test_confidence_34_skips_draft(self) -> None:
+        """confidence_score = 34 (< 35) → draft NOT generated (hard gate)."""
+        cs = _make_company_state(confidence_score=34)
         persona = _make_persona("p1")
 
         draft, cost = await run_draft(
@@ -133,6 +132,29 @@ class TestConfidenceGateBoundary:
         )
         assert draft is None
         assert cost == 0.0
+
+    @pytest.mark.asyncio
+    async def test_confidence_59_generates_hedged_draft(self) -> None:
+        """confidence_score = 59 (35 ≤ x < 60) → hedged draft IS generated."""
+        cs = _make_company_state(confidence_score=59)
+        persona = _make_persona("p1")
+
+        with patch("backend.agents.draft.ChatAnthropic") as MockLLM:
+            mock_response = MagicMock()
+            mock_response.content = _DRAFT_MOCK_RESPONSE
+            MockLLM.return_value.ainvoke = AsyncMock(return_value=mock_response)
+
+            draft, cost = await run_draft(
+                cs=cs,
+                persona=persona,
+                seller_profile=_SELLER_PROFILE,
+                llm_provider="anthropic",
+                llm_model="claude-sonnet-4-6",
+                current_total_cost=0.0,
+                max_budget_usd=1.0,
+            )
+        assert draft is not None
+        assert cost > 0
 
     @pytest.mark.asyncio
     async def test_confidence_60_generates_draft(self) -> None:
@@ -160,9 +182,8 @@ class TestConfidenceGateBoundary:
         assert cost > 0
 
     @pytest.mark.asyncio
-    @pytest.mark.skip(reason="FLAKY: _DRAFT_CONFIDENCE_GATE is now 35 not 60; skipped pending investigation")  # noqa: E501
-    async def test_confidence_threshold_constant_is_60(self) -> None:
-        assert _DRAFT_CONFIDENCE_GATE == 60
+    async def test_confidence_threshold_constant_is_35(self) -> None:
+        assert _DRAFT_CONFIDENCE_GATE == 35
 
     @pytest.mark.asyncio
     async def test_override_generates_draft_even_below_threshold(self) -> None:
@@ -270,10 +291,9 @@ class TestVersionIncrement:
 
 class TestRunDraftsForCompany:
     @pytest.mark.asyncio
-    @pytest.mark.skip(reason="FLAKY: confidence gate changed; confidence=59 no longer sets human_review_required=True; skipped pending investigation")  # noqa: E501
-    async def test_confidence_59_flags_human_review_required(self) -> None:
-        """run_drafts_for_company: confidence < 60 → human_review_required=True, no draft."""
-        cs = _make_company_state(confidence_score=59)
+    async def test_confidence_30_flags_human_review_required(self) -> None:
+        """run_drafts_for_company: confidence < 35 → human_review_required=True, no draft."""
+        cs = _make_company_state(confidence_score=30)
 
         updated_cs, cost = await run_drafts_for_company(
             cs=cs,
@@ -286,6 +306,31 @@ class TestRunDraftsForCompany:
         assert updated_cs["human_review_required"] is True
         assert HumanReviewReason.LOW_CONFIDENCE in updated_cs["human_review_reasons"]
         assert cost == 0.0
+
+    @pytest.mark.asyncio
+    async def test_confidence_45_generates_hedged_draft_no_review(self) -> None:
+        """run_drafts_for_company: 35 ≤ confidence < 60 → hedged draft, no hard-gate review."""
+        cs = _make_company_state(confidence_score=45, selected_persona_ids=["p1"])
+        cs = dict(cs)
+        cs["generated_personas"] = [_make_persona("p1")]
+        cs["synthesis_outputs"] = {"p1": _make_synthesis("p1")}
+
+        with patch("backend.agents.draft.ChatAnthropic") as MockLLM:
+            mock_response = MagicMock()
+            mock_response.content = _DRAFT_MOCK_RESPONSE
+            MockLLM.return_value.ainvoke = AsyncMock(return_value=mock_response)
+
+            updated_cs, cost = await run_drafts_for_company(
+                cs=cs,  # type: ignore[arg-type]
+                seller_profile=None,
+                llm_provider="anthropic",
+                llm_model="claude-sonnet-4-6",
+                current_total_cost=0.0,
+                max_budget_usd=1.0,
+            )
+        assert updated_cs.get("low_confidence_draft") is True
+        assert "p1" in updated_cs["drafts"]
+        assert cost > 0
 
     @pytest.mark.asyncio
     async def test_parallel_drafts_respect_session_budget(self) -> None:
@@ -330,10 +375,9 @@ class TestRunDraftsForCompany:
         assert len(updated_cs["drafts"]) <= 2
 
     @pytest.mark.asyncio
-    @pytest.mark.skip(reason="FLAKY: drafted_under_override is False despite override=True; skipped pending investigation")  # noqa: E501
     async def test_override_tags_drafted_under_override(self) -> None:
-        """override_requested=True + confidence < 60 → drafted_under_override=True."""
-        cs = _make_company_state(confidence_score=45, override_requested=True)
+        """override_requested=True + confidence < 35 → drafted_under_override=True."""
+        cs = _make_company_state(confidence_score=25, override_requested=True)
 
         with patch("backend.agents.draft.ChatAnthropic") as MockLLM:
             mock_response = MagicMock()
