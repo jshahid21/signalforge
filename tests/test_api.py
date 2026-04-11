@@ -652,6 +652,162 @@ class TestPersonaConfirmFailurePropagation:
         assert "pipeline_complete" in event_types
 
 
+class TestPipelineTaskHappyPathTerminalStatus:
+    """Regression for PR #9 round-3 feedback: sessions.py::_run_pipeline_task
+    happy-path else branch must derive completed/partial/failed from
+    final_state['company_states'] instead of unconditionally marking the
+    session 'completed' when awaiting={}. An empty-awaiting set can also mean
+    'all companies failed before HITL' (e.g., signal ingestion errors).
+    """
+
+    def _make_initial_state(self) -> "AgentState":  # type: ignore[name-defined]
+        from backend.models.state import AgentState, SellerProfile
+
+        return AgentState(
+            target_companies=["Acme", "Globex"],
+            seller_profile=SellerProfile(
+                company_name="", portfolio_summary="", portfolio_items=[]
+            ),
+            company_states={},
+            pipeline_started_at="",
+            pipeline_completed_at=None,
+            active_company_ids=[],
+            completed_company_ids=[],
+            failed_company_ids=[],
+            awaiting_persona_selection=False,
+            awaiting_review=[],
+            execution_log=[],
+            total_cost_usd=0.0,
+            final_drafts=[],
+        )
+
+    def _make_stub_graph(self, company_states_chunk: dict):
+        """Return a stub LangGraph-like object whose astream yields one chunk."""
+
+        class _StubGraph:
+            async def astream(self, initial_state, config=None):
+                yield {
+                    "company_pipeline": {
+                        "company_states": company_states_chunk,
+                    }
+                }
+
+        return _StubGraph()
+
+    async def test_pipeline_task_all_fail_marks_session_failed(
+        self, monkeypatch
+    ) -> None:
+        from backend.api import session_store, websocket as ws_module
+        from backend.api.routes.sessions import _run_pipeline_task
+        from backend.models.enums import PipelineStatus
+
+        session_id = "sess-happy-all-fail"
+        session_store.create_session_record(session_id, ["Acme", "Globex"], {})
+        active = session_store.ActiveSession(session_id=session_id)
+        session_store.register_session(active)
+
+        events: list[dict] = []
+
+        async def _capture_broadcast(sid: str, event: dict) -> None:
+            events.append(event)
+
+        monkeypatch.setattr(ws_module.manager, "broadcast", _capture_broadcast)
+
+        # Stub graph yields both companies in FAILED status — no awaiting stage
+        stub_graph = self._make_stub_graph(
+            {
+                "acme": {
+                    "company_id": "acme",
+                    "company_name": "Acme",
+                    "status": PipelineStatus.FAILED,
+                    "current_stage": "signal_ingestion",
+                },
+                "globex": {
+                    "company_id": "globex",
+                    "company_name": "Globex",
+                    "status": PipelineStatus.FAILED,
+                    "current_stage": "signal_ingestion",
+                },
+            }
+        )
+        monkeypatch.setattr(
+            "backend.pipeline.build_pipeline", lambda checkpointer=None: stub_graph
+        )
+
+        await _run_pipeline_task(session_id, self._make_initial_state())
+
+        rec = session_store.get_session_record(session_id)
+        assert rec is not None
+        assert rec["status"] == PipelineStatus.FAILED.value, (
+            f"expected 'failed' when all companies failed on happy path, "
+            f"got {rec['status']!r}"
+        )
+        assert rec["error_message"] is not None
+        assert "acme" in rec["error_message"]
+        assert "globex" in rec["error_message"]
+
+        event_types = {e.get("type") for e in events}
+        assert "error" in event_types
+        assert "pipeline_complete" in event_types
+
+    async def test_pipeline_task_mixed_outcome_marks_session_partial(
+        self, monkeypatch
+    ) -> None:
+        from backend.api import session_store, websocket as ws_module
+        from backend.api.routes.sessions import _run_pipeline_task
+        from backend.models.enums import PipelineStatus
+
+        session_id = "sess-happy-mixed"
+        session_store.create_session_record(session_id, ["Acme", "Globex"], {})
+        active = session_store.ActiveSession(session_id=session_id)
+        session_store.register_session(active)
+
+        events: list[dict] = []
+
+        async def _capture_broadcast(sid: str, event: dict) -> None:
+            events.append(event)
+
+        monkeypatch.setattr(ws_module.manager, "broadcast", _capture_broadcast)
+
+        # One succeeds, one fails — expect session 'partial'
+        stub_graph = self._make_stub_graph(
+            {
+                "acme": {
+                    "company_id": "acme",
+                    "company_name": "Acme",
+                    "status": PipelineStatus.COMPLETED,
+                    "current_stage": "done",
+                },
+                "globex": {
+                    "company_id": "globex",
+                    "company_name": "Globex",
+                    "status": PipelineStatus.FAILED,
+                    "current_stage": "signal_ingestion",
+                },
+            }
+        )
+        monkeypatch.setattr(
+            "backend.pipeline.build_pipeline", lambda checkpointer=None: stub_graph
+        )
+
+        await _run_pipeline_task(session_id, self._make_initial_state())
+
+        rec = session_store.get_session_record(session_id)
+        assert rec is not None
+        assert rec["status"] == PipelineStatus.PARTIAL.value, (
+            f"expected 'partial' when only some companies failed on happy path, "
+            f"got {rec['status']!r}"
+        )
+        assert rec["error_message"] is not None
+        assert "globex" in rec["error_message"]
+        # acme succeeded — should not be in the failed list
+        assert "1/2" in rec["error_message"] or "globex" in rec["error_message"]
+
+        event_types = {e.get("type") for e in events}
+        assert "error" in event_types
+        assert "pipeline_complete" in event_types
+
+
 class TestPipelineTaskExceptBroadcast:
     """Regression for PR #9 iteration feedback: sessions.py _run_pipeline_task
     must broadcast pipeline_complete (in addition to broadcast_error) from its

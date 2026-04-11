@@ -96,12 +96,16 @@ interface Props {
   onSelectCompany: (id: string) => void
 }
 
+// NOTE: 'partial' is intentionally NOT in this list. It is a session-level
+// terminal status only — per-company states are always completed or failed,
+// so filtering the company table by 'partial' would always return empty.
+// 'partial' stays in STATUS_STYLES / STATUS_LABELS because App.tsx reuses
+// the badge for session-level status display.
 const STATUS_FILTER_OPTIONS: Array<{ value: string; label: string }> = [
   { value: '', label: 'All' },
   { value: 'running', label: 'Running' },
   { value: 'awaiting_human', label: 'Awaiting' },
   { value: 'completed', label: 'Done' },
-  { value: 'partial', label: 'Partial' },
   { value: 'failed', label: 'Failed' },
   { value: 'skipped', label: 'Skipped' },
   { value: 'pending', label: 'Pending' },

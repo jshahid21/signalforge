@@ -141,10 +141,41 @@ async def _run_pipeline_task(
 
         if awaiting:
             active.awaiting_persona_selection = True
-            update_session_record(session_id, "awaiting_human")
+            update_session_record(session_id, PipelineStatus.AWAITING_HUMAN.value)
             await manager.broadcast_hitl_required(session_id, awaiting)
         else:
-            update_session_record(session_id, "completed")
+            # Derive session terminal status from per-company outcomes
+            # (issue #8 bug 4, round 3): "no awaiting companies" does NOT
+            # imply success — all companies may have failed during signal
+            # ingestion (or any pre-HITL stage). Mirror personas.py so the
+            # UI sees completed/partial/failed based on actual outcomes.
+            processed_ids: list[str] = []
+            failed_ids: list[str] = []
+            for cid, cs in final_state.get("company_states", {}).items():
+                if not isinstance(cs, dict):
+                    continue
+                processed_ids.append(cid)
+                if cs.get("status") in (PipelineStatus.FAILED, "failed"):
+                    failed_ids.append(cid)
+
+            if not processed_ids or not failed_ids:
+                final_status = PipelineStatus.COMPLETED.value
+                err_msg = None
+            elif len(failed_ids) == len(processed_ids):
+                final_status = PipelineStatus.FAILED.value
+                err_msg = f"All companies failed: {', '.join(failed_ids)}"
+            else:
+                final_status = PipelineStatus.PARTIAL.value
+                err_msg = (
+                    f"{len(failed_ids)}/{len(processed_ids)} companies failed: "
+                    f"{', '.join(failed_ids)}"
+                )
+
+            update_session_record(session_id, final_status, error_message=err_msg)
+            # Broadcast pipeline_complete on ANY terminal state so the UI can
+            # finalize. Emit broadcast_error first when there's detail.
+            if err_msg:
+                await manager.broadcast_error(session_id, err_msg)
             await manager.broadcast_pipeline_complete(session_id)
 
         # Budget warning: if total cost >= 80% of max

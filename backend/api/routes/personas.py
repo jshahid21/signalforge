@@ -242,10 +242,17 @@ async def confirm_persona_selection(
 
         except Exception as exc:
             import traceback
+            from backend.models.enums import PipelineStatus as _PipelineStatus
             logger.error("Synthesis phase failed for session %s: %s\n%s",
                          session_id, exc, traceback.format_exc())
-            update_session_record(session_id, "failed", error_message=str(exc))
+            update_session_record(
+                session_id, _PipelineStatus.FAILED.value, error_message=str(exc)
+            )
+            # Broadcast pipeline_complete on terminal state so the UI can
+            # finalize (stop spinners, enable actions). broadcast_error
+            # carries the failure detail.
             await manager.broadcast_error(session_id, str(exc))
+            await manager.broadcast_pipeline_complete(session_id)
 
     task = asyncio.create_task(_run_synthesis_phase())
     active.task = task
