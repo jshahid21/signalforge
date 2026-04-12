@@ -69,15 +69,27 @@ Capability Map (use as a semantic scaffold — you may also generate novel solut
 
 Instructions:
 1. Identify the core technical problem this company is trying to solve.
+   The core_problem MUST be specific to this company. It MUST include:
+   - The company name
+   - At least one concrete detail from the signal or research context (e.g., named technologies,
+     specific scale indicators, team sizes, business metrics, or concrete business outcomes)
+   - What specifically they are trying to achieve or struggling with
+   Do NOT write a generic problem statement that could apply to any company.
 2. Select 2–3 solution areas that best match. Prefer capability map entries if they fit well.
    If no map entry fits, generate a novel solution area (mark it as "(inferred)" in the reasoning).
 3. Assign a confidence score 0–100 based on signal specificity and how well the solution areas match.
 4. NEVER include vendor product names in solution_areas (e.g., no "Snowflake", "Databricks", "AWS Glue").
    Always describe in vendor-agnostic terms (e.g., "Columnar storage optimization", "Stream processing").
 
+Examples of BAD vs GOOD core_problem:
+- BAD: "Scaling ML infrastructure to meet growing demands."
+- GOOD: "{company_name} is scaling its Kubernetes-based ML platform to support real-time fraud detection, as indicated by active hiring for ML platform and infrastructure engineers."
+- BAD: "Modernizing data infrastructure for better analytics."
+- GOOD: "{company_name} is migrating from batch ETL to stream processing to reduce reporting latency from hours to minutes, driven by its growth in transaction volume."
+
 Output ONLY valid JSON, no commentary:
 {{
-  "core_problem": "<1–2 sentences describing the core technical problem>",
+  "core_problem": "<1–2 sentences with company-specific details as described above>",
   "solution_areas": ["<area 1>", "<area 2>", "<area 3 (optional)>"],
   "inferred_areas": ["<list only areas NOT present in the capability map above; use [] if all areas are from the map>"],
   "confidence_score": <integer 0–100>,
@@ -150,12 +162,14 @@ async def run_solution_mapping(
     if research_result:
         parts = []
         if research_result.get("company_context"):
-            parts.append(research_result["company_context"])
+            parts.append("Company context: " + research_result["company_context"])
         if research_result.get("hiring_signals"):
-            parts.append(research_result["hiring_signals"])
+            parts.append("Hiring signals: " + research_result["hiring_signals"])
         if research_result.get("tech_stack"):
             parts.append("Tech stack: " + ", ".join(research_result["tech_stack"]))
-        research_context = " ".join(parts) if parts else "No research context available."
+        research_context = "\n".join(parts) if parts else "No research context available."
+    else:
+        research_context = "No research context available."
 
     capability_map_text = _capability_map_to_text(capability_map)
     cost_incurred = 0.0
