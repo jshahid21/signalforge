@@ -19,7 +19,7 @@ No clarifying questions needed — the issue provides a comprehensive problem st
 2. **Where does seller intelligence live?** — `backend/config/loader.py` (Pydantic: `SellerIntelligence`) and `backend/models/state.py` (TypedDict: `SellerIntelligenceDict`), stored in `~/.signalforge/config.json` as part of `SellerProfileConfig`.
 3. **How are they currently connected?** — They are NOT connected. Capability map drives signal detection and solution mapping. Seller intelligence drives draft enrichment. They operate in parallel silos with no cross-linking.
 4. **Where does industry appear?** — Only as free-text in `ResearchResult.company_context`. No structured field exists.
-5. **UI for editing?** — `frontend/src/components/SettingsModal.tsx` has a `CapabilityMapTab` for uploading/editing capability entries. Seller intelligence is displayed in a read-only section after scraping.
+5. **UI for editing?** — `frontend/src/components/SettingsPanel.tsx` has a `CapabilityMapTab` for uploading/editing capability entries. Seller intelligence is displayed in a read-only section after scraping.
 
 ## Problem Statement
 
@@ -76,23 +76,27 @@ Each `CapabilityMapEntry` gains seller intelligence fields that link it to the s
   solution_areas: ["Container Orchestration", "Infrastructure Automation"]
   # NEW fields:
   differentiators: ["Multi-cloud orchestration with 99.99% uptime"]
-  sales_play: "Platform scaling for high-growth engineering teams"
-  proof_points: ["Stripe: reduced deploy time by 60%"]
+  sales_plays:
+    - play: "Platform scaling for high-growth engineering teams"
+      category: "infrastructure"
+  proof_points:
+    - customer: "Stripe"
+      summary: "Reduced deploy time by 60%"
 ```
 
-- `differentiators`: Subset of seller differentiators most relevant to this capability
-- `sales_play`: A single strategic sales play for this capability (user-authored or scraped-then-edited)
-- `proof_points`: Subset of proof points most relevant to this capability
+- `differentiators`: `list[str]` — Subset of seller differentiators most relevant to this capability
+- `sales_plays`: `list[SalesPlayDict]` — Strategic sales plays for this capability. Uses the same `{play, category}` structure as the existing `SellerIntelligence.sales_plays` field for consistency. Auto-linked from scraped data, then user-editable.
+- `proof_points`: `list[ProofPointDict]` — Subset of proof points relevant to this capability. Uses the same `{customer, summary}` structure as existing `SellerIntelligence.proof_points`.
 
-These fields are **optional** — existing capability maps without them continue to work.
+These fields are **optional** — existing capability maps without them continue to work. The structured types mirror the existing `SalesPlayDict` and `ProofPointDict` TypedDicts in `state.py` to avoid type divergence.
 
 ### 2. Manual Sales Play Input
 
 Users can define/edit sales plays per capability entry through the UI:
 - Web-scraped use cases pre-populate as suggestions
 - Users verify and customize — sales plays are strategic internal knowledge
-- Each capability entry's `sales_play` field is editable inline
-- The `differentiators` and `proof_points` per entry are also editable
+- Each capability entry's `sales_plays`, `differentiators`, and `proof_points` fields are editable inline
+- Users can add new entries, edit existing ones, or remove irrelevant auto-linked items
 
 ### 3. Structured Industry Detection
 
@@ -111,6 +115,8 @@ Extend `SellerProfileConfig` and `SellerProfile` TypedDict with:
 - **company_size_messaging**: `dict[str, str]` — Messaging variants by company size segment (e.g., `{"enterprise": "...", "mid_market": "...", "startup": "..."}`)
 
 These fields are **optional** with sensible defaults (empty lists/dicts). They are user-configured via the Settings UI, not auto-scraped.
+
+**UI complexity note**: `competitive_counters` (dict of competitor → list of talking points) requires a dynamic key-value editor. The Settings UI should use a simple add/remove pattern: user types a competitor name, then adds talking points as a list. This is a non-trivial UI component but follows established patterns (similar to how portfolio_items are edited today, just nested one level deeper).
 
 ### 5. Pipeline Integration
 
@@ -137,14 +143,18 @@ signal_ingestion (unchanged — uses problem_signals)
 
 ### Functional Requirements
 
-1. **Enriched capability map schema**: `CapabilityMapEntry` supports optional `differentiators`, `sales_play`, `proof_points` fields. Existing maps without these fields load without error.
-2. **Auto-linking**: After seller intelligence scraping, a linking step matches scraped differentiators/proof points/sales plays to capability entries based on semantic relevance.
+1. **Enriched capability map schema**: `CapabilityMapEntry` supports optional `differentiators: list[str]`, `sales_plays: list[SalesPlayDict]`, `proof_points: list[ProofPointDict]` fields. Existing maps without these fields load without error (default to `[]`).
+2. **Auto-linking**: After seller intelligence scraping completes, a linking function in `backend/config/capability_map.py` uses a single LLM call to match scraped intelligence items to capability entries by semantic relevance. The LLM receives the full list of capability entries (id + label + solution_areas) and the scraped intelligence, and returns a mapping of capability_id → {differentiators, sales_plays, proof_points}. Unmatched items remain in the global `SellerIntelligence` but are not linked to any capability entry. The user can review and edit the auto-linked results via the UI.
 3. **Manual sales play editing**: UI allows users to view, edit, and add sales plays per capability entry. Scraped values pre-populate as suggestions.
-4. **Structured industry**: `CompanyState` includes `industry: Optional[str]`. Research agent populates it from a fixed taxonomy. Pipeline agents use it when available.
+4. **Structured industry**: `CompanyState` includes `industry: Optional[str]`. Research agent populates it from a fixed taxonomy. If classification fails, `industry` remains `None` and downstream agents degrade gracefully (skip industry-specific logic, use generic messaging).
 5. **Seller context fields**: `target_verticals`, `value_metrics`, `competitive_counters`, `company_size_messaging` are configurable via Settings UI and persist to config.
-6. **Matched capability IDs**: `SolutionMappingOutput` includes `matched_capability_ids` so downstream agents can look up enriched capability data.
-7. **Draft enrichment chain**: Draft agent receives explicit `capability → sales_play → proof_point` chain instead of inferring connections.
+6. **Matched capability IDs**: `SolutionMappingOutput` includes `matched_capability_ids: list[str]`. If a matched ID references a capability entry that was later deleted, downstream agents skip that ID gracefully (log a warning, continue without the enrichment data).
+7. **Draft enrichment chain**: Draft agent receives explicit `capability → sales_plays → proof_points` chain instead of inferring connections.
 8. **Backward compatibility**: All new fields are optional. Existing configs, capability maps, and pipeline state work without modification.
+9. **API endpoints**: 
+   - `PATCH /api/settings/capability-map/{entry_id}/intelligence` — Update seller intelligence fields (differentiators, sales_plays, proof_points) for a specific capability entry. Payload: `{differentiators?: string[], sales_plays?: SalesPlayDict[], proof_points?: ProofPointDict[]}`. Merges with existing entry and persists to `capability_map.yaml`.
+   - `POST /api/settings/capability-map/auto-link` — Trigger auto-linking of current seller intelligence to capability entries. Returns the proposed mapping for user review.
+   - `PUT /api/settings/seller-context` — Save additional seller context fields (target_verticals, value_metrics, competitive_counters, company_size_messaging). Payload mirrors the new config fields.
 
 ### Non-Functional Requirements
 
@@ -193,6 +203,23 @@ Create a separate `capability_seller_links.yaml` mapping capability IDs to selle
 - Competitive intelligence scraping (competitive_counters are user-entered, not auto-scraped)
 - Advanced ML-based auto-linking (simple LLM-based semantic matching is sufficient)
 
+## Edge Cases and Error Handling
+
+1. **Deleted capability entry with linked intelligence**: If a user deletes a capability entry that has seller intelligence linked to it, the linked items (differentiators, sales_plays, proof_points) are lost from that entry. They remain in the global `SellerIntelligence` store and can be re-linked via auto-link or manual editing on other entries.
+2. **Stale `matched_capability_ids`**: If `SolutionMappingOutput.matched_capability_ids` references a capability ID that was deleted between pipeline runs, downstream agents (synthesis, draft) skip the stale ID with a warning log. They still use any remaining valid IDs and fall back to the global seller intelligence if no valid matches remain.
+3. **Auto-linking produces zero matches**: If no scraped intelligence items match any capability entry, all items remain in the global `SellerIntelligence` only. The UI shows the unlinked items and allows manual assignment.
+4. **Industry classification failure**: If the research agent's LLM call fails to classify industry, `industry` remains `None`. Persona generation uses generic titles (current behavior). Synthesis and draft skip industry-specific messaging sections.
+5. **Empty capability map**: If no capability map is configured, auto-linking is skipped. Pipeline operates as today with global seller intelligence only.
+6. **Concurrent edits**: Capability map is hot-reloaded on each pipeline run. If a user edits intelligence fields while a pipeline is running, the running pipeline uses the version loaded at start. Next run picks up changes.
+
+## Testing Strategy
+
+1. **Unit tests**: Schema changes — verify `CapabilityMapEntry` loads with and without new optional fields; verify `CompanyState` with/without `industry`; verify new config fields default correctly.
+2. **Auto-linking tests**: Mock LLM response to verify linking function correctly maps intelligence items to capability entries; test with empty capability map, empty intelligence, partial matches.
+3. **Pipeline integration tests**: Verify `matched_capability_ids` flows from solution_mapping through synthesis to draft; verify stale ID handling; verify industry field propagation.
+4. **API endpoint tests**: PATCH capability intelligence, POST auto-link, PUT seller context — success and validation error cases.
+5. **Backward compatibility tests**: Load existing `capability_map.yaml` and `config.json` without new fields; verify no errors.
+
 ## Open Questions
 
 None critical. All integration points are well-defined in the existing codebase.
@@ -202,4 +229,17 @@ None critical. All integration points are well-defined in the existing codebase.
 
 ## Consultation Log
 
-*To be populated after 3-way consultation.*
+### Iteration 1 — Spec Review
+
+**Claude** (VERDICT: REQUEST_CHANGES, CONFIDENCE: HIGH):
+- Fixed `SettingsModal.tsx` → `SettingsPanel.tsx` filename error
+- Reconciled `sales_play: str` (singular) → `sales_plays: list[SalesPlayDict]` (plural, structured) to match existing `SellerIntelligence` schema
+- Added auto-linking step detail: where it runs (`capability_map.py`), what LLM call it uses (single call with full context), how ambiguous/zero matches are handled
+- Added edge cases: deleted capability entries, stale `matched_capability_ids`, failed industry classification, empty capability map
+- Added API endpoint specifications (PATCH intelligence, POST auto-link, PUT seller context)
+- Acknowledged `competitive_counters` UI complexity with implementation guidance
+- Added testing strategy with specific test categories
+
+**Gemini**: Consultation completed but produced no review output (tool limitation).
+
+**Codex**: Unavailable — usage limit reached.
