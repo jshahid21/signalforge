@@ -100,9 +100,25 @@ END
 All state is TypedDict-based (not Pydantic models).
 
 - **`AgentState`**: Global graph state — `company_states`, `seller_profile`, `total_cost_usd`, `awaiting_persona_selection`
-- **`CompanyState`**: Per-company state — all agent outputs keyed by `company_id`
+- **`CompanyState`**: Per-company state — all agent outputs keyed by `company_id`. Includes `industry: Optional[str]` for structured industry classification.
 - **`CompanyInput`**: Immutable input to `company_pipeline` node (via `Send()`)
+- **`SolutionMappingOutput`**: Includes `matched_capability_ids: List[str]` linking to enriched capability entries
 - **Reducers**: `merge_dict` (company_states), `append_list` (list fields), `add_float` (costs)
+
+## Capability Map ↔ Seller Intelligence Integration
+
+`CapabilityMapEntry` supports optional seller intelligence fields (`differentiators`, `sales_plays`, `proof_points`) that link vendor-agnostic solution areas to the seller's specific value proposition. These are populated via:
+1. **Auto-linking**: After seller intelligence scraping, `auto_link_intelligence()` in `seller_intelligence.py` uses LLM to match scraped items to capability entries
+2. **Manual editing**: PATCH `/api/settings/capability-map/{entry_id}/intelligence` + inline UI editor
+
+Pipeline flow with enrichment:
+```
+research (sets industry) → solution_mapping (sets matched_capability_ids)
+→ persona_generation (uses industry for titles) → synthesis (uses matched capability enrichment + industry)
+→ draft (uses capability-specific sales_plays/proof_points instead of global intelligence)
+```
+
+`capability_map` is passed to synthesis and draft nodes (not just ingestion/qualification/mapping).
 
 ## Key Design Decisions
 
