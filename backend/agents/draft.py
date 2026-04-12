@@ -268,16 +268,17 @@ Risk if unaddressed: {synthesis.get('risk_if_ignored', '')}
 
 {solution_instruction}
 
-Structure:
-1. One sentence stating what the signals suggest is happening at {company_name} — specific, not generic
-2. One or two sentences on the operational or technical pressure this creates — without assuming you know their situation
-3. {"One sentence on a relevant capability or what you've seen work at similar companies" if high_confidence else "One direct question: is this challenge actually on their radar?"}
-4. One sentence proposing a 15-minute call to compare notes — not a demo
+Structure (3 sentences MAXIMUM — executives skim, not read):
+1. HOOK — One sentence referencing the SPECIFIC signal (name the job title, technology, or initiative). No hedging.
+2. {"BRIDGE — One sentence connecting that signal to a specific, concrete outcome you've delivered (use a proof point with a real metric if available from seller intelligence). Do NOT say 'I\\'ve seen companies' — state the result directly: 'We cut migration timelines from 18 months to 6 for a similar retailer.'" if high_confidence else "QUESTION — One direct, specific question about whether this challenge is on their radar."}
+3. CTA — One sentence: 15-minute call to compare notes. That's it.
+
+Total: 50-80 words. Not 100. Not 150. Three sentences. If you can't say it in three sentences, you don't understand the signal well enough.
 
 Output ONLY valid JSON:
 {{
-  "subject": "<8-12 words, specific to the observed signal, zero hype>",
-  "body": "<100-175 words, no clichés, grounded in the signals above>"
+  "subject": "<6-10 words, reference the specific signal, zero hype>",
+  "body": "<50-80 words, exactly 3 sentences, no filler>"
 }}"""
 
 
