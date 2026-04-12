@@ -42,7 +42,6 @@ import asyncio
 from langgraph.graph import END, StateGraph
 
 from backend.agents.hitl_gate import (
-    apply_persona_selection,
     hitl_gate_node,
     run_persona_selection_gate,
 )
@@ -52,13 +51,10 @@ from backend.agents.research import run_research
 from backend.agents.signal_ingestion import run_signal_ingestion
 from backend.agents.signal_qualification import run_signal_qualification
 from backend.agents.solution_mapping import run_solution_mapping
-from backend.agents.synthesis import run_synthesis
-from backend.agents.draft import run_drafts_for_company
-from backend.agents.memory_agent import get_few_shot_examples
 from backend.config.capability_map import load_capability_map
 from backend.config.loader import load_config
 from backend.models.enums import PipelineStatus
-from backend.models.state import AgentState, CompanyInput, CompanyState, SellerProfile
+from backend.models.state import AgentState
 from backend.tools.jsearch import JSearchClient
 from backend.tools.tavily import TavilySearchClient
 
