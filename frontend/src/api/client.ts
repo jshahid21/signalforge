@@ -178,7 +178,14 @@ export const settingsApi = {
   patchCapabilityIntelligence: (entryId: string, data: { differentiators?: string[]; sales_plays?: SalesPlayEntry[]; proof_points?: ProofPointEntry[] }) =>
     api.patch(`/settings/capability-map/${entryId}/intelligence`, data).then(r => r.data),
   autoLinkIntelligence: () => api.post('/settings/capability-map/auto-link').then(r => r.data),
-  extractSellerIntelligence: (data?: { website_url?: string }) => api.post('/settings/seller-intelligence/extract', data ?? {}).then(r => r.data),
+  extractSellerIntelligence: (data?: { website_url?: string; text?: string }) => api.post('/settings/seller-intelligence/extract', data ?? {}).then(r => r.data),
+  extractFromFiles: (files: File[]) => {
+    const form = new FormData()
+    files.forEach(f => form.append('files', f))
+    return api.post('/settings/seller-intelligence/extract-from-files', form, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    }).then(r => r.data)
+  },
   getLangsmith: () => api.get<Record<string, unknown>>('/settings/langsmith').then(r => r.data),
   putLangsmith: (data: { enabled: boolean; api_key: string; project: string }) => api.put('/settings/langsmith', data).then(r => r.data),
 }
