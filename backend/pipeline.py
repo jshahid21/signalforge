@@ -233,4 +233,12 @@ def build_pipeline(checkpointer=None):
     graph.add_edge("persona_generation", "hitl_gate")
     graph.add_edge("hitl_gate", END)
 
+    # langgraph dev may pass a dict or other config — normalize to a valid checkpointer
+    if isinstance(checkpointer, dict) or (checkpointer is not None and not hasattr(checkpointer, 'aget')):
+        try:
+            from langgraph.checkpoint.memory import MemorySaver
+            checkpointer = MemorySaver()
+        except ImportError:
+            checkpointer = None
+
     return graph.compile(checkpointer=checkpointer)
