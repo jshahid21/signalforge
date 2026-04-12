@@ -131,11 +131,24 @@ class TestSolutionMappingOutput:
         sm: SolutionMappingOutput = {
             "core_problem": "Scaling data platform",
             "solution_areas": ["Distributed query execution"],
+            "inferred_areas": [],
+            "matched_capability_ids": [],
             "confidence_score": 85,
             "reasoning": "Strong hiring signals for data eng",
         }
         assert isinstance(sm["confidence_score"], int)
         assert sm["confidence_score"] == 85
+
+    def test_matched_capability_ids(self) -> None:
+        sm: SolutionMappingOutput = {
+            "core_problem": "ML platform scaling",
+            "solution_areas": ["Model training", "Inference"],
+            "inferred_areas": [],
+            "matched_capability_ids": ["ml_infra", "data_platform"],
+            "confidence_score": 75,
+            "reasoning": "Strong match to ML capability",
+        }
+        assert sm["matched_capability_ids"] == ["ml_infra", "data_platform"]
 
 
 class TestPersona:
@@ -222,6 +235,7 @@ class TestCompanyState:
             "qualified_signal": None,
             "signal_qualified": False,
             "research_result": None,
+            "industry": None,
             "solution_mapping": None,
             "generated_personas": [],
             "selected_personas": [],
@@ -238,6 +252,7 @@ class TestCompanyState:
         }
         assert cs["company_id"] == "stripe"
         assert cs["qualified_signal"] is None
+        assert cs["industry"] is None
         assert cs["generated_personas"] == []
         assert cs["drafts"] == {}
 

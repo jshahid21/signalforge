@@ -6,10 +6,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from backend.agents.synthesis import (
+    _build_enrichment_context,
     _make_fallback_synthesis,
     _parse_synthesis_response,
     run_synthesis,
 )
+from backend.config.capability_map import CapabilityMap, CapabilityMapEntry
 from backend.models.enums import PipelineStatus, SignalTier
 from backend.models.state import (
     CompanyState,
@@ -67,10 +69,12 @@ def _make_company_state(
             hiring_signals="Scaling platform engineering.",
             partial=False,
         ),
+        industry=None,
         solution_mapping=SolutionMappingOutput(
             core_problem="Scaling Kubernetes infrastructure for global payments.",
             solution_areas=["Container orchestration", "Platform automation"],
             inferred_areas=[],
+            matched_capability_ids=[],
             confidence_score=75,
             reasoning="Strong infra signal.",
         ),
@@ -220,3 +224,55 @@ class TestRunSynthesis:
         assert "p1" in updated_cs["synthesis_outputs"]
         # p2 not selected
         assert "p2" not in updated_cs["synthesis_outputs"]
+
+
+# ---------------------------------------------------------------------------
+# Enrichment context builder tests
+# ---------------------------------------------------------------------------
+
+
+class TestBuildEnrichmentContext:
+    def test_returns_empty_when_no_capability_map(self) -> None:
+        assert _build_enrichment_context(["some_id"], None) == ""
+
+    def test_returns_empty_when_no_matched_ids(self) -> None:
+        cap_map = CapabilityMap(
+            entries=[CapabilityMapEntry({"id": "x", "label": "X"})],
+            version="1.0",
+        )
+        assert _build_enrichment_context([], cap_map) == ""
+
+    def test_builds_context_from_matched_entries(self) -> None:
+        cap_map = CapabilityMap(
+            entries=[
+                CapabilityMapEntry({
+                    "id": "ml",
+                    "label": "ML Platform",
+                    "differentiators": ["Best ML ops"],
+                    "sales_plays": [{"play": "ML scaling", "category": "ml"}],
+                    "proof_points": [{"customer": "BigCo", "summary": "2x faster"}],
+                }),
+            ],
+            version="1.0",
+        )
+        result = _build_enrichment_context(["ml"], cap_map)
+        assert "ML Platform" in result
+        assert "Best ML ops" in result
+        assert "ML scaling" in result
+        assert "BigCo" in result
+
+    def test_skips_stale_ids(self) -> None:
+        cap_map = CapabilityMap(
+            entries=[CapabilityMapEntry({"id": "valid", "label": "Valid", "differentiators": ["Diff"]})],
+            version="1.0",
+        )
+        result = _build_enrichment_context(["valid", "deleted_id"], cap_map)
+        assert "Valid" in result
+
+    def test_returns_empty_when_entries_have_no_enrichment(self) -> None:
+        cap_map = CapabilityMap(
+            entries=[CapabilityMapEntry({"id": "bare", "label": "Bare"})],
+            version="1.0",
+        )
+        result = _build_enrichment_context(["bare"], cap_map)
+        assert result == ""

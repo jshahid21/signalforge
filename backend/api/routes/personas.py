@@ -119,6 +119,21 @@ async def confirm_persona_selection(
                 portfolio_summary=config.seller_profile.portfolio_summary,
                 portfolio_items=config.seller_profile.portfolio_items,
             )
+            # Include seller intelligence and context fields
+            si = config.seller_profile.seller_intelligence
+            seller_profile["seller_intelligence"] = {
+                "differentiators": si.differentiators,
+                "sales_plays": [sp.model_dump() for sp in si.sales_plays],
+                "proof_points": [pp.model_dump() for pp in si.proof_points],
+                "competitive_positioning": si.competitive_positioning,
+                "last_scraped": si.last_scraped,
+            }
+            seller_profile["target_verticals"] = config.seller_profile.target_verticals
+            seller_profile["value_metrics"] = config.seller_profile.value_metrics
+
+            # Load capability map for enrichment context
+            from backend.config.capability_map import load_capability_map
+            capability_map = load_capability_map()
 
             states = dict(active.last_state.get("company_states", {}))  # type: ignore[union-attr]
             total_cost = 0.0
@@ -148,6 +163,7 @@ async def confirm_persona_selection(
                         llm_model=llm_model,
                         current_total_cost=current_cost + total_cost,
                         max_budget_usd=max_budget,
+                        capability_map=capability_map,
                     )
                 except Exception as synth_exc:
                     logger.error(
@@ -182,6 +198,7 @@ async def confirm_persona_selection(
                         current_total_cost=current_cost + total_cost,
                         max_budget_usd=max_budget,
                         few_shot_examples=few_shot,
+                        capability_map=capability_map,
                     )
                 except Exception as draft_exc:
                     logger.error(

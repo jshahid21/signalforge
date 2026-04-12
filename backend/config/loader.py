@@ -47,6 +47,10 @@ class SellerProfileConfig(BaseModel):
     portfolio_items: list[str] = Field(default_factory=list)
     website_url: Optional[str] = None
     seller_intelligence: SellerIntelligence = Field(default_factory=SellerIntelligence)
+    target_verticals: list[str] = Field(default_factory=list)
+    value_metrics: list[str] = Field(default_factory=list)
+    competitive_counters: dict[str, list[str]] = Field(default_factory=dict)
+    company_size_messaging: dict[str, str] = Field(default_factory=dict)
 
 
 class ApiKeysConfig(BaseModel):

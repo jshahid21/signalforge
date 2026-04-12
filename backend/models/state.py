@@ -68,6 +68,7 @@ class SolutionMappingOutput(TypedDict):
     core_problem: str
     solution_areas: List[str]           # Vendor-agnostic capability categories
     inferred_areas: List[str]           # Subset of solution_areas not in capability map
+    matched_capability_ids: List[str]   # IDs of capability entries whose solution_areas best match
     confidence_score: int               # 0–100 integer scale (per spec §5.5)
     reasoning: str
 
@@ -145,6 +146,10 @@ class SellerProfile(TypedDict):
     portfolio_items: List[str]
     website_url: NotRequired[Optional[str]]
     seller_intelligence: NotRequired[SellerIntelligenceDict]
+    target_verticals: NotRequired[List[str]]
+    value_metrics: NotRequired[List[str]]
+    competitive_counters: NotRequired[Dict[str, List[str]]]
+    company_size_messaging: NotRequired[Dict[str, str]]
 
 
 # ---------------------------------------------------------------------------
@@ -168,6 +173,7 @@ class CompanyState(TypedDict):
 
     # Research layer
     research_result: Optional[ResearchResult]
+    industry: Optional[str]                         # Standard industry classification (e.g. "fintech")
 
     # Solution mapping
     solution_mapping: Optional[SolutionMappingOutput]

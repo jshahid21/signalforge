@@ -258,6 +258,58 @@ class TestCapabilityMapSave:
         assert loaded.entries[0].id == "test_cap"
         assert loaded.entries[0].problem_signals == ["foo"]
 
+    def test_round_trips_with_seller_intelligence_fields(
+        self, tmp_capability_map_path: Path, tmp_config_dir: Path
+    ) -> None:
+        entries = [
+            CapabilityMapEntry({
+                "id": "enriched",
+                "label": "Enriched Cap",
+                "problem_signals": ["signal"],
+                "solution_areas": ["area"],
+                "differentiators": ["Best in class"],
+                "sales_plays": [{"play": "Scale play", "category": "infra"}],
+                "proof_points": [{"customer": "Acme", "summary": "50% faster"}],
+            })
+        ]
+        cap_map = CapabilityMap(entries=entries, version="1.0")
+        save_capability_map(cap_map)
+
+        loaded = load_capability_map()
+        assert loaded is not None
+        entry = loaded.entries[0]
+        assert entry.differentiators == ["Best in class"]
+        assert entry.sales_plays == [{"play": "Scale play", "category": "infra"}]
+        assert entry.proof_points == [{"customer": "Acme", "summary": "50% faster"}]
+
+
+class TestCapabilityMapEntrySellerIntelligenceDefaults:
+    def test_new_fields_default_to_empty_lists(
+        self, tmp_capability_map_path: Path, tmp_config_dir: Path
+    ) -> None:
+        """Existing maps without seller intelligence fields load without error."""
+        tmp_capability_map_path.write_text(VALID_MAP_YAML, encoding="utf-8")
+        cap_map = load_capability_map()
+        assert cap_map is not None
+        entry = cap_map.entries[0]
+        assert entry.differentiators == []
+        assert entry.sales_plays == []
+        assert entry.proof_points == []
+
+    def test_as_dict_includes_new_fields(self) -> None:
+        entry = CapabilityMapEntry({
+            "id": "test",
+            "label": "Test",
+            "differentiators": ["diff1"],
+        })
+        d = entry.as_dict()
+        assert "differentiators" in d
+        assert "sales_plays" in d
+        assert "proof_points" in d
+        assert d["differentiators"] == ["diff1"]
+        assert d["sales_plays"] == []
+        assert d["proof_points"] == []
+
 
 # ---------------------------------------------------------------------------
 # Seller intelligence model tests
@@ -380,3 +432,48 @@ class TestSellerProfileConfigWithIntelligence:
         )
         assert profile.company_name == "Co Updated"
         assert profile.seller_intelligence.differentiators == ["Existing diff"]
+
+
+# ---------------------------------------------------------------------------
+# Seller context fields tests
+# ---------------------------------------------------------------------------
+
+
+class TestSellerContextFields:
+    def test_default_seller_context_fields(self, tmp_config_dir: Path) -> None:
+        config = load_config()
+        assert config.seller_profile.target_verticals == []
+        assert config.seller_profile.value_metrics == []
+        assert config.seller_profile.competitive_counters == {}
+        assert config.seller_profile.company_size_messaging == {}
+
+    def test_seller_context_round_trip(self, tmp_config_dir: Path) -> None:
+        config = load_config()
+        config.seller_profile.target_verticals = ["fintech", "healthcare"]
+        config.seller_profile.value_metrics = ["40% faster deploys"]
+        config.seller_profile.competitive_counters = {"Competitor": ["Lower cost"]}
+        config.seller_profile.company_size_messaging = {"enterprise": "Scale message"}
+        save_config(config)
+
+        loaded = load_config()
+        assert loaded.seller_profile.target_verticals == ["fintech", "healthcare"]
+        assert loaded.seller_profile.value_metrics == ["40% faster deploys"]
+        assert loaded.seller_profile.competitive_counters == {"Competitor": ["Lower cost"]}
+        assert loaded.seller_profile.company_size_messaging == {"enterprise": "Scale message"}
+
+    def test_backward_compat_without_context_fields(self, tmp_config_dir: Path) -> None:
+        """Old configs without seller context fields load with empty defaults."""
+        config_file = tmp_config_dir / "config.json"
+        old_config = {
+            "seller_profile": {
+                "company_name": "OldCo",
+                "portfolio_summary": "Tools",
+                "portfolio_items": [],
+            },
+            "api_keys": {},
+            "session_budget": {},
+        }
+        config_file.write_text(json.dumps(old_config), encoding="utf-8")
+        config = load_config()
+        assert config.seller_profile.target_verticals == []
+        assert config.seller_profile.competitive_counters == {}

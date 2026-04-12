@@ -62,6 +62,40 @@ async def update_seller_profile(body: SellerProfileBody) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Seller Context (additional fields)
+# ---------------------------------------------------------------------------
+
+
+class SellerContextBody(BaseModel):
+    target_verticals: list[str] = Field(default_factory=list)
+    value_metrics: list[str] = Field(default_factory=list)
+    competitive_counters: dict[str, list[str]] = Field(default_factory=dict)
+    company_size_messaging: dict[str, str] = Field(default_factory=dict)
+
+
+@router.get("/seller-context")
+async def get_seller_context() -> dict:
+    config = load_config()
+    return {
+        "target_verticals": config.seller_profile.target_verticals,
+        "value_metrics": config.seller_profile.value_metrics,
+        "competitive_counters": config.seller_profile.competitive_counters,
+        "company_size_messaging": config.seller_profile.company_size_messaging,
+    }
+
+
+@router.put("/seller-context")
+async def update_seller_context(body: SellerContextBody) -> dict:
+    config = load_config()
+    config.seller_profile.target_verticals = body.target_verticals
+    config.seller_profile.value_metrics = body.value_metrics
+    config.seller_profile.competitive_counters = body.competitive_counters
+    config.seller_profile.company_size_messaging = body.company_size_messaging
+    save_config(config)
+    return {"status": "saved"}
+
+
+# ---------------------------------------------------------------------------
 # Seller Intelligence Extraction
 # ---------------------------------------------------------------------------
 
@@ -87,6 +121,84 @@ async def extract_seller_intelligence(body: ExtractIntelligenceRequest) -> dict:
         raise HTTPException(status_code=422, detail=str(exc))
     except RuntimeError as exc:
         raise HTTPException(status_code=502, detail=str(exc))
+
+
+# ---------------------------------------------------------------------------
+# Auto-Link Intelligence to Capability Map
+# ---------------------------------------------------------------------------
+
+
+@router.post("/capability-map/auto-link")
+async def auto_link_capability_intelligence() -> dict:
+    """Trigger auto-linking of seller intelligence to capability map entries.
+
+    Uses LLM to match scraped differentiators, sales plays, and proof points
+    to the most relevant capability entries.
+    """
+    from backend.agents.seller_intelligence import auto_link_intelligence
+    from backend.config.capability_map import load_capability_map
+
+    config = load_config()
+    cap_map = load_capability_map()
+    if cap_map is None or not cap_map.entries:
+        raise HTTPException(
+            status_code=422,
+            detail="No capability map configured. Create or generate a capability map first.",
+        )
+
+    intelligence = config.seller_profile.seller_intelligence
+    has_items = (
+        intelligence.differentiators
+        or intelligence.sales_plays
+        or intelligence.proof_points
+    )
+    if not has_items:
+        raise HTTPException(
+            status_code=422,
+            detail="No seller intelligence available. Extract intelligence from your website first.",
+        )
+
+    llm_model = config.api_keys.llm_model
+    if not llm_model:
+        raise HTTPException(
+            status_code=422,
+            detail="LLM model is not configured. Open Settings → API Keys and set LLM provider and model.",
+        )
+
+    try:
+        mapping = await auto_link_intelligence(
+            cap_map, intelligence, config.api_keys.llm_provider, llm_model,
+        )
+
+        # Compute unlinked items (intelligence items not matched to any entry)
+        linked_diffs: set[str] = set()
+        linked_plays: set[str] = set()
+        linked_proofs: set[str] = set()
+        for items in mapping.values():
+            for d in items.get("differentiators", []):
+                if isinstance(d, str):
+                    linked_diffs.add(d)
+            for sp in items.get("sales_plays", []):
+                if isinstance(sp, dict):
+                    linked_plays.add(sp.get("play", ""))
+            for pp in items.get("proof_points", []):
+                if isinstance(pp, dict):
+                    linked_proofs.add(pp.get("customer", ""))
+
+        unlinked = {
+            "differentiators": [d for d in intelligence.differentiators if d not in linked_diffs],
+            "sales_plays": [sp.model_dump() for sp in intelligence.sales_plays if sp.play not in linked_plays],
+            "proof_points": [pp.model_dump() for pp in intelligence.proof_points if pp.customer not in linked_proofs],
+        }
+
+        return {
+            "status": "linked",
+            "linked": mapping,
+            "unlinked": unlinked,
+            "entries_updated": len(mapping),
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Auto-linking failed: {exc}")
 
 
 # ---------------------------------------------------------------------------
@@ -194,6 +306,36 @@ async def update_langsmith(body: LangSmithBody) -> dict:
 # ---------------------------------------------------------------------------
 # Capability Map Generation
 # ---------------------------------------------------------------------------
+
+
+class CapabilityIntelligenceBody(BaseModel):
+    differentiators: Optional[list[str]] = None
+    sales_plays: Optional[list[dict]] = None
+    proof_points: Optional[list[dict]] = None
+
+
+@router.patch("/capability-map/{entry_id}/intelligence")
+async def update_capability_intelligence(entry_id: str, body: CapabilityIntelligenceBody) -> dict:
+    """Update seller intelligence fields for a specific capability map entry."""
+    from backend.config.capability_map import load_capability_map, save_capability_map
+
+    cap_map = load_capability_map()
+    if cap_map is None:
+        raise HTTPException(status_code=404, detail="Capability map not found")
+
+    entry = next((e for e in cap_map.entries if e.id == entry_id), None)
+    if entry is None:
+        raise HTTPException(status_code=404, detail=f"Entry '{entry_id}' not found")
+
+    if body.differentiators is not None:
+        entry.differentiators = body.differentiators
+    if body.sales_plays is not None:
+        entry.sales_plays = body.sales_plays
+    if body.proof_points is not None:
+        entry.proof_points = body.proof_points
+
+    save_capability_map(cap_map)
+    return {"status": "updated", "entry": entry.as_dict()}
 
 
 class CapabilityMapRequest(BaseModel):

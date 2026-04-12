@@ -1,11 +1,11 @@
 """Tests for Research Agent — graceful degradation and partial flag behavior."""
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from backend.agents.research import _run_tech_stack_extraction, run_research
+from backend.agents.research import _run_industry_classification, _run_tech_stack_extraction, run_research
 from backend.models.enums import PipelineStatus, SignalTier
 from backend.models.state import (
     CompanyState,
@@ -48,6 +48,7 @@ def _make_company_state(company_id: str = "stripe") -> CompanyState:
         ),
         signal_qualified=True,
         research_result=None,
+        industry=None,
         solution_mapping=None,
         generated_personas=[],
         selected_personas=[],
@@ -211,6 +212,64 @@ class TestRunResearch:
         assert any(
             e["error_type"] == "budget_exceeded" for e in updated_cs["errors"]
         )
+
+
+    @pytest.mark.asyncio
+    async def test_sets_industry_on_company_state(self) -> None:
+        """Verify industry classification populates cs['industry']."""
+        cs = _make_company_state("stripe")
+        mock_response = MagicMock()
+        mock_response.content = "fintech"
+        with patch("backend.agents.research._make_llm") as mock_make_llm:
+            mock_llm = MagicMock()
+            mock_llm.ainvoke = AsyncMock(return_value=mock_response)
+            mock_make_llm.return_value = mock_llm
+            updated_cs, _ = await run_research(
+                cs=cs,
+                llm_provider="anthropic",
+                llm_model="claude-sonnet-4-6",
+                current_total_cost=0.0,
+                max_budget_usd=1.0,
+            )
+        assert updated_cs["industry"] == "fintech"
+
+
+class TestIndustryClassification:
+    @pytest.mark.asyncio
+    async def test_returns_none_with_no_model(self) -> None:
+        result = await _run_industry_classification("Stripe", "Hiring engineers", "anthropic", "")
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_returns_valid_taxonomy_value(self) -> None:
+        mock_response = MagicMock()
+        mock_response.content = "fintech"
+        with patch("backend.agents.research._make_llm") as mock_make_llm:
+            mock_llm = MagicMock()
+            mock_llm.ainvoke = AsyncMock(return_value=mock_response)
+            mock_make_llm.return_value = mock_llm
+            result = await _run_industry_classification("Stripe", "Payment platform", "anthropic", "claude-sonnet-4-6")
+        assert result == "fintech"
+
+    @pytest.mark.asyncio
+    async def test_returns_other_for_unknown_industry(self) -> None:
+        mock_response = MagicMock()
+        mock_response.content = "agriculture"
+        with patch("backend.agents.research._make_llm") as mock_make_llm:
+            mock_llm = MagicMock()
+            mock_llm.ainvoke = AsyncMock(return_value=mock_response)
+            mock_make_llm.return_value = mock_llm
+            result = await _run_industry_classification("FarmCo", "Farm tech", "anthropic", "claude-sonnet-4-6")
+        assert result == "other"
+
+    @pytest.mark.asyncio
+    async def test_returns_none_on_exception(self) -> None:
+        with patch("backend.agents.research._make_llm") as mock_make_llm:
+            mock_llm = MagicMock()
+            mock_llm.ainvoke = AsyncMock(side_effect=Exception("API error"))
+            mock_make_llm.return_value = mock_llm
+            result = await _run_industry_classification("Stripe", "Payment", "anthropic", "claude-sonnet-4-6")
+        assert result is None
 
 
 class TestTechStackExtraction:

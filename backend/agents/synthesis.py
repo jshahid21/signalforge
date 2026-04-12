@@ -59,18 +59,22 @@ def _build_synthesis_prompt(
     persona_title: str,
     role_type: str,
     targeting_reason: str,
+    industry: str | None = None,
+    enrichment_context: str = "",
 ) -> str:
     from backend.utils.date import date_context_line
     areas_text = ", ".join(solution_areas) if solution_areas else "general technology modernization"
+    industry_line = f"\nTarget company industry: {industry}" if industry else ""
+    enrichment_section = f"\n\nSeller's specific angle on this problem:\n{enrichment_context}" if enrichment_context else ""
     return f"""{date_context_line()}
 
 You are a senior solutions architect synthesizing intelligence for B2B outreach.
 
-Company: {company_name}
+Company: {company_name}{industry_line}
 Signal summary: {signal_summary}
 Research context: {research_context}
 Core problem identified: {core_problem}
-Solution areas: {areas_text}
+Solution areas: {areas_text}{enrichment_section}
 
 Target persona: {persona_title} ({role_type})
 Reason for targeting: {targeting_reason}
@@ -135,6 +139,8 @@ async def _synthesize_for_persona(
     persona: Persona,
     llm_provider: str,
     llm_model: str,
+    industry: str | None = None,
+    enrichment_context: str = "",
 ) -> SynthesisOutput:
     """Generate SynthesisOutput for a single persona. Graceful on LLM failure."""
     if not llm_model or HumanMessage is None:
@@ -149,6 +155,8 @@ async def _synthesize_for_persona(
         persona_title=persona["title"],
         role_type=persona["role_type"],
         targeting_reason=persona.get("targeting_reason", ""),
+        industry=industry,
+        enrichment_context=enrichment_context,
     )
     try:
         llm = _make_llm(llm_provider, llm_model)
@@ -169,6 +177,38 @@ async def _synthesize_for_persona(
     return _make_fallback_synthesis(company_name, core_problem, persona["title"])
 
 
+def _build_enrichment_context(matched_capability_ids: list[str], capability_map) -> str:
+    """Build enrichment context string from matched capability entries."""
+    if not capability_map or not matched_capability_ids:
+        return ""
+    import logging
+    logger = logging.getLogger(__name__)
+    entry_by_id = {e.id: e for e in capability_map.entries}
+    parts: list[str] = []
+    for cap_id in matched_capability_ids:
+        entry = entry_by_id.get(cap_id)
+        if entry is None:
+            logger.warning("Stale matched_capability_id: %s (entry deleted)", cap_id)
+            continue
+        section_parts: list[str] = []
+        if entry.differentiators:
+            section_parts.append("Differentiators: " + "; ".join(entry.differentiators[:3]))
+        if entry.sales_plays:
+            plays = [sp.get("play", "") for sp in entry.sales_plays[:3] if isinstance(sp, dict)]
+            if plays:
+                section_parts.append("Sales plays: " + "; ".join(plays))
+        if entry.proof_points:
+            proofs = [
+                f"{pp.get('customer', '')}: {pp.get('summary', '')}"
+                for pp in entry.proof_points[:3] if isinstance(pp, dict)
+            ]
+            if proofs:
+                section_parts.append("Proof points: " + "; ".join(proofs))
+        if section_parts:
+            parts.append(f"[{entry.label}] " + " | ".join(section_parts))
+    return "\n".join(parts)
+
+
 @traceable(name="run_synthesis")
 async def run_synthesis(
     cs: CompanyState,
@@ -176,6 +216,7 @@ async def run_synthesis(
     llm_model: str,
     current_total_cost: float,
     max_budget_usd: float,
+    capability_map=None,
 ) -> tuple[CompanyState, float]:
     """Run synthesis for all selected personas in parallel.
 
@@ -230,6 +271,11 @@ async def run_synthesis(
     if not personas_to_synthesize:
         return cs, 0.0  # type: ignore[return-value]
 
+    # Build enrichment context from matched capability entries
+    matched_ids = solution_mapping.get("matched_capability_ids", []) if solution_mapping else []
+    enrichment_context = _build_enrichment_context(matched_ids, capability_map)
+    industry = cs.get("industry")
+
     # Run synthesis in parallel for all personas
     synthesis_tasks = [
         _synthesize_for_persona(
@@ -241,6 +287,8 @@ async def run_synthesis(
             persona=persona,
             llm_provider=llm_provider,
             llm_model=llm_model,
+            industry=industry,
+            enrichment_context=enrichment_context,
         )
         for persona in personas_to_synthesize
     ]

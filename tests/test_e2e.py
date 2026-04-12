@@ -480,7 +480,8 @@ async def test_memory_injection_passes_few_shot_examples():
     original_run_drafts = run_drafts_for_company
 
     async def _intercepting_run_drafts(cs, seller_profile, llm_provider, llm_model,
-                                        current_total_cost, max_budget_usd, few_shot_examples):
+                                        current_total_cost, max_budget_usd, few_shot_examples,
+                                        capability_map=None):
         captured_few_shot.extend(few_shot_examples)
         # Return cs unmodified to avoid LLM calls
         return cs, 0.0

@@ -87,11 +87,24 @@ export interface SynthesisOutput {
   risk_if_ignored: string
 }
 
+export interface SalesPlayEntry {
+  play: string
+  category: string
+}
+
+export interface ProofPointEntry {
+  customer: string
+  summary: string
+}
+
 export interface CapabilityMapEntry {
   id: string
   label: string
   problem_signals: string[]
   solution_areas: string[]
+  differentiators?: string[]
+  sales_plays?: SalesPlayEntry[]
+  proof_points?: ProofPointEntry[]
 }
 
 export interface CompanyState {
@@ -162,6 +175,9 @@ export const settingsApi = {
   addCapabilityMapEntry: (entry: CapabilityMapEntry) => api.post<CapabilityMapEntry>('/settings/capability-map/entries', entry).then(r => r.data),
   deleteCapabilityMapEntry: (id: string) => api.delete(`/settings/capability-map/entries/${id}`).then(r => r.data),
   generateCapabilityMap: (data: Record<string, unknown>) => api.post('/settings/capability-map/generate', data).then(r => r.data),
+  patchCapabilityIntelligence: (entryId: string, data: { differentiators?: string[]; sales_plays?: SalesPlayEntry[]; proof_points?: ProofPointEntry[] }) =>
+    api.patch(`/settings/capability-map/${entryId}/intelligence`, data).then(r => r.data),
+  autoLinkIntelligence: () => api.post('/settings/capability-map/auto-link').then(r => r.data),
   extractSellerIntelligence: (data?: { website_url?: string }) => api.post('/settings/seller-intelligence/extract', data ?? {}).then(r => r.data),
   getLangsmith: () => api.get<Record<string, unknown>>('/settings/langsmith').then(r => r.data),
   putLangsmith: (data: { enabled: boolean; api_key: string; project: string }) => api.put('/settings/langsmith', data).then(r => r.data),

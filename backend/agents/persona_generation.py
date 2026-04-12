@@ -312,6 +312,7 @@ def _build_persona_customization_prompt(
     solution_areas: list[str],
     company_name: str,
     research_result: ResearchResult | None,
+    industry: str | None = None,
 ) -> str:
     """Build prompt asking the LLM to customize persona titles for this company."""
     from backend.utils.date import date_context_line
@@ -327,6 +328,8 @@ def _build_persona_customization_prompt(
             parts.append(research_result["hiring_signals"])
         research_context = " ".join(parts) if parts else "No research context."
 
+    industry_line = f"\nIndustry: {industry}" if industry else ""
+
     persona_list = "\n".join(
         f"  - role_type: {p['role_type']}, seniority: {p['seniority_level']}, "
         f"default_title: \"{p['title']}\""
@@ -337,7 +340,7 @@ def _build_persona_customization_prompt(
 
 You are customizing B2B buyer persona titles for a specific company based on their signals.
 
-Company: {company_name}
+Company: {company_name}{industry_line}
 Signal category: {category}
 Signal summary: {signal_summary}
 Core problem: {core_problem}
@@ -392,6 +395,7 @@ async def _customize_personas_with_llm(
     research_result: ResearchResult | None,
     llm_provider: str,
     llm_model: str,
+    industry: str | None = None,
 ) -> list[Persona] | None:
     """Use LLM to customize persona titles. Returns None on failure (caller uses fallback)."""
     if not llm_model or HumanMessage is None:
@@ -405,6 +409,7 @@ async def _customize_personas_with_llm(
         solution_areas=solution_areas,
         company_name=company_name,
         research_result=research_result,
+        industry=industry,
     )
 
     try:
@@ -520,6 +525,7 @@ async def run_persona_generation(
     )
 
     # Use LLM to customize titles/priorities based on company context (if budget allows)
+    industry = cs.get("industry")
     cost_incurred = 0.0
     budget_remaining = max_budget_usd - current_total_cost
     if llm_model and budget_remaining >= _LLM_COST:
@@ -533,6 +539,7 @@ async def run_persona_generation(
             research_result=research_result,
             llm_provider=llm_provider,
             llm_model=llm_model,
+            industry=industry,
         )
         if customized is not None:
             personas = customized

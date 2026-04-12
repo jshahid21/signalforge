@@ -59,8 +59,9 @@ def isolated_memory_db(tmp_path, monkeypatch):
 
 @pytest.fixture(autouse=True)
 def isolated_config(tmp_path, monkeypatch):
-    """Each test gets an isolated config directory."""
+    """Each test gets an isolated config directory and capability map path."""
     monkeypatch.setenv("SIGNALFORGE_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setenv("SIGNALFORGE_CAPABILITY_MAP_PATH", str(tmp_path / "capability_map.yaml"))
 
 
 @pytest.fixture
@@ -164,6 +165,97 @@ class TestSettingsEndpoints:
             "tier3_limit": 1,
         })
         assert resp.status_code == 422
+
+    async def test_auto_link_rejects_without_capability_map(self, client) -> None:
+        resp = await client.post("/settings/capability-map/auto-link")
+        assert resp.status_code == 422
+        assert "capability map" in resp.json()["detail"].lower()
+
+    async def test_auto_link_rejects_without_intelligence(self, client) -> None:
+        # Create a capability map first
+        await client.post("/settings/capability-map/entries", json={
+            "id": "test_cap",
+            "label": "Test Cap",
+            "problem_signals": ["test"],
+            "solution_areas": ["Test Area"],
+        })
+        resp = await client.post("/settings/capability-map/auto-link")
+        assert resp.status_code == 422
+        assert "intelligence" in resp.json()["detail"].lower()
+
+    async def test_get_seller_context_defaults(self, client) -> None:
+        resp = await client.get("/settings/seller-context")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["target_verticals"] == []
+        assert data["value_metrics"] == []
+        assert data["competitive_counters"] == {}
+        assert data["company_size_messaging"] == {}
+
+    async def test_put_seller_context(self, client) -> None:
+        resp = await client.put("/settings/seller-context", json={
+            "target_verticals": ["fintech", "healthcare"],
+            "value_metrics": ["40% faster deploys"],
+            "competitive_counters": {"Competitor": ["Lower cost"]},
+            "company_size_messaging": {"enterprise": "Scale message"},
+        })
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "saved"
+
+        # Verify persistence
+        resp2 = await client.get("/settings/seller-context")
+        data = resp2.json()
+        assert data["target_verticals"] == ["fintech", "healthcare"]
+        assert data["value_metrics"] == ["40% faster deploys"]
+
+    async def test_patch_capability_intelligence(self, client) -> None:
+        # Create a capability entry first
+        await client.post("/settings/capability-map/entries", json={
+            "id": "test_cap",
+            "label": "Test Cap",
+            "problem_signals": ["test"],
+            "solution_areas": ["Test Area"],
+        })
+        # Patch intelligence
+        resp = await client.patch("/settings/capability-map/test_cap/intelligence", json={
+            "differentiators": ["Best in class"],
+            "sales_plays": [{"play": "Scale play", "category": "infra"}],
+        })
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "updated"
+        assert data["entry"]["differentiators"] == ["Best in class"]
+        assert len(data["entry"]["sales_plays"]) == 1
+
+    async def test_patch_capability_intelligence_not_found(self, client) -> None:
+        resp = await client.patch("/settings/capability-map/nonexistent/intelligence", json={
+            "differentiators": ["Test"],
+        })
+        assert resp.status_code == 404
+
+    async def test_auto_link_rejects_without_llm_model(self, client) -> None:
+        # Create capability map
+        await client.post("/settings/capability-map/entries", json={
+            "id": "test_cap",
+            "label": "Test Cap",
+            "problem_signals": ["test"],
+            "solution_areas": ["Test Area"],
+        })
+        # Set intelligence on profile
+        await client.put("/settings/seller-profile", json={
+            "company_name": "TestCo",
+            "portfolio_summary": "Test",
+            "portfolio_items": ["Product"],
+            "seller_intelligence": {
+                "differentiators": ["Best product"],
+                "sales_plays": [{"play": "Test play", "category": "test"}],
+                "proof_points": [],
+                "competitive_positioning": [],
+            },
+        })
+        resp = await client.post("/settings/capability-map/auto-link")
+        assert resp.status_code == 422
+        assert "LLM model" in resp.json()["detail"]
 
 
 # ---------------------------------------------------------------------------

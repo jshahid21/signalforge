@@ -88,11 +88,15 @@ Examples of BAD vs GOOD core_problem:
 - BAD: "Modernizing data infrastructure for better analytics."
 - GOOD: "{company_name} is migrating from batch ETL to stream processing to reduce reporting latency from hours to minutes, driven by its growth in transaction volume."
 
+5. Return the IDs of capability map entries whose solution areas best match (from the [id: ...] tags above).
+   If no capability map is configured, return an empty list.
+
 Output ONLY valid JSON, no commentary:
 {{
   "core_problem": "<1–2 sentences with company-specific details as described above>",
   "solution_areas": ["<area 1>", "<area 2>", "<area 3 (optional)>"],
   "inferred_areas": ["<list only areas NOT present in the capability map above; use [] if all areas are from the map>"],
+  "matched_capability_ids": ["<id of matched capability entry>"],
   "confidence_score": <integer 0–100>,
   "reasoning": "<explanation of why these areas match>"
 }}"""
@@ -105,7 +109,7 @@ def _capability_map_to_text(capability_map: CapabilityMap | None) -> str:
     for entry in capability_map.entries:
         signals_text = ", ".join(entry.problem_signals[:5]) if entry.problem_signals else "N/A"
         areas_text = ", ".join(entry.solution_areas[:3]) if entry.solution_areas else "N/A"
-        lines.append(f"- [{entry.label}] signals: {signals_text} | areas: {areas_text}")
+        lines.append(f"- [id: {entry.id}] {entry.label} | signals: {signals_text} | areas: {areas_text}")
     return "\n".join(lines) if lines else "(Empty capability map.)"
 
 
@@ -126,6 +130,11 @@ def _parse_solution_mapping_response(text: str) -> dict | None:
         # inferred_areas is optional in LLM output; default to []
         if "inferred_areas" not in data:
             data["inferred_areas"] = []
+        # matched_capability_ids is optional; default to []
+        if "matched_capability_ids" not in data:
+            data["matched_capability_ids"] = []
+        elif not isinstance(data["matched_capability_ids"], list):
+            data["matched_capability_ids"] = []
         return data
     except (json.JSONDecodeError, ValueError, TypeError):
         return None
@@ -186,6 +195,7 @@ async def run_solution_mapping(
         core_problem="Unable to determine — LLM not configured or budget exceeded.",
         solution_areas=[],
         inferred_areas=[],
+        matched_capability_ids=[],
         confidence_score=0,
         reasoning="LLM unavailable.",
     )
@@ -212,10 +222,15 @@ async def run_solution_mapping(
                 inferred_areas = [str(a) for a in raw_inferred if isinstance(a, str)]
                 confidence = int(parsed.get("confidence_score", 0))
                 confidence = max(0, min(100, confidence))
+                matched_ids = [
+                    str(mid) for mid in parsed.get("matched_capability_ids", [])
+                    if isinstance(mid, str)
+                ]
                 solution_mapping = SolutionMappingOutput(
                     core_problem=str(parsed.get("core_problem", "")).strip(),
                     solution_areas=sanitized_areas,
                     inferred_areas=inferred_areas,
+                    matched_capability_ids=matched_ids,
                     confidence_score=confidence,
                     reasoning=str(parsed.get("reasoning", "")).strip(),
                 )
