@@ -48,7 +48,7 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
-_MAX_COMBINED_TEXT = 30_000  # chars — fits comfortably in most LLM context windows
+_MAX_COMBINED_TEXT = 120_000  # chars — Claude/GPT-4o handle 100K+ easily; needed for large PDFs
 _SUBPAGE_CRAWL_DELAY = 1.0  # seconds between subpage fetches
 
 

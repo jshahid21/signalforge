@@ -14,7 +14,7 @@ from backend.tools.web_crawler import strip_html_tags
 ALLOWED_EXTENSIONS = {".pdf", ".docx", ".pptx", ".xlsx", ".html", ".htm", ".txt"}
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 MB
 MAX_FILES = 5
-MAX_COMBINED_TEXT = 30_000  # chars — matches website scraping truncation
+MAX_COMBINED_TEXT = 120_000  # chars — large docs need more context for quality extraction
 
 
 def extract_text_from_file(file_bytes: bytes, filename: str) -> str:
