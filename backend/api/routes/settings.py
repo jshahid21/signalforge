@@ -61,6 +61,34 @@ async def update_seller_profile(body: SellerProfileBody) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Seller Intelligence Extraction
+# ---------------------------------------------------------------------------
+
+
+class ExtractIntelligenceRequest(BaseModel):
+    website_url: Optional[str] = None
+
+
+@router.post("/seller-intelligence/extract")
+async def extract_seller_intelligence(body: ExtractIntelligenceRequest) -> dict:
+    """Extract seller intelligence from website. Saves to config on success."""
+    from backend.agents.seller_intelligence import extract_and_save_seller_intelligence
+
+    try:
+        intelligence = await extract_and_save_seller_intelligence(
+            website_url=body.website_url,
+        )
+        return {
+            "status": "extracted",
+            "seller_intelligence": intelligence.model_dump(),
+        }
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+
+
+# ---------------------------------------------------------------------------
 # API Keys
 # ---------------------------------------------------------------------------
 
