@@ -5,7 +5,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from backend.agents.draft import _DRAFT_CONFIDENCE_GATE, run_draft, run_drafts_for_company
+from backend.agents.draft import (
+    _DRAFT_CONFIDENCE_GATE,
+    _build_draft_system_prompt,
+    _build_seller_intelligence_section,
+    run_draft,
+    run_drafts_for_company,
+)
 from backend.models.enums import HumanReviewReason, PipelineStatus, SignalTier
 from backend.models.state import (
     CompanyState,
@@ -393,3 +399,112 @@ class TestRunDraftsForCompany:
                 max_budget_usd=1.0,
             )
         assert updated_cs["drafted_under_override"] is True
+
+
+# ---------------------------------------------------------------------------
+# Seller intelligence enrichment tests
+# ---------------------------------------------------------------------------
+
+_SELLER_PROFILE_WITH_INTELLIGENCE = SellerProfile(
+    company_name="CloudCo",
+    portfolio_summary="Cloud infrastructure tooling",
+    portfolio_items=["Kubernetes Optimizer", "Cost Analyzer"],
+    seller_intelligence={
+        "differentiators": [
+            "Best-in-class ML ops platform",
+            "Zero-downtime deployment for models",
+        ],
+        "sales_plays": [
+            {"play": "FinOps cost optimization", "category": "cost_optimization"},
+            {"play": "ML model deployment acceleration", "category": "ml_ops"},
+        ],
+        "proof_points": [
+            {"customer": "Acme Corp", "summary": "Reduced cloud costs by 40%"},
+        ],
+        "competitive_positioning": [
+            "Unlike competitors, we offer real-time model monitoring",
+        ],
+        "last_scraped": "2026-04-12T00:00:00Z",
+    },
+)
+
+
+class TestBuildSellerIntelligenceSection:
+    def test_returns_empty_when_no_intelligence(self) -> None:
+        profile = SellerProfile(
+            company_name="TestCo",
+            portfolio_summary="",
+            portfolio_items=[],
+        )
+        assert _build_seller_intelligence_section(profile) == ""
+
+    def test_returns_empty_when_intelligence_is_empty(self) -> None:
+        profile = SellerProfile(
+            company_name="TestCo",
+            portfolio_summary="",
+            portfolio_items=[],
+            seller_intelligence={
+                "differentiators": [],
+                "sales_plays": [],
+                "proof_points": [],
+                "competitive_positioning": [],
+            },
+        )
+        assert _build_seller_intelligence_section(profile) == ""
+
+    def test_includes_all_categories(self) -> None:
+        section = _build_seller_intelligence_section(_SELLER_PROFILE_WITH_INTELLIGENCE)
+        assert "## Seller Intelligence" in section
+        assert "Best-in-class ML ops platform" in section
+        assert "FinOps cost optimization" in section
+        assert "cost_optimization" in section
+        assert "Acme Corp" in section
+        assert "Reduced cloud costs by 40%" in section
+        assert "real-time model monitoring" in section
+
+    def test_includes_selection_instructions(self) -> None:
+        section = _build_seller_intelligence_section(_SELLER_PROFILE_WITH_INTELLIGENCE)
+        assert "1-2 most compelling" in section
+        assert "select the 1 most relevant" in section
+
+    def test_partial_intelligence_only_includes_present(self) -> None:
+        profile = SellerProfile(
+            company_name="TestCo",
+            portfolio_summary="",
+            portfolio_items=[],
+            seller_intelligence={
+                "differentiators": ["Unique feature"],
+                "sales_plays": [],
+                "proof_points": [],
+                "competitive_positioning": [],
+            },
+        )
+        section = _build_seller_intelligence_section(profile)
+        assert "Unique feature" in section
+        assert "Sales plays" not in section
+        assert "Proof points" not in section
+
+
+class TestDraftSystemPromptWithIntelligence:
+    def test_prompt_includes_intelligence_when_available(self) -> None:
+        prompt = _build_draft_system_prompt(_SELLER_PROFILE_WITH_INTELLIGENCE, [])
+        assert "## Seller Intelligence" in prompt
+        assert "FinOps cost optimization" in prompt
+        assert "Acme Corp" in prompt
+        assert "CloudCo" in prompt
+
+    def test_prompt_fallback_without_intelligence(self) -> None:
+        prompt = _build_draft_system_prompt(_SELLER_PROFILE, [])
+        assert "## Seller Intelligence" not in prompt
+        assert "CloudCo" in prompt
+        assert "Kubernetes Optimizer" in prompt
+
+    def test_prompt_fallback_without_profile(self) -> None:
+        prompt = _build_draft_system_prompt(None, [])
+        assert "vendor-agnostic" in prompt
+        assert "## Seller Intelligence" not in prompt
+
+    def test_prompt_stays_within_reasonable_length(self) -> None:
+        prompt = _build_draft_system_prompt(_SELLER_PROFILE_WITH_INTELLIGENCE, [])
+        # Prompt should not be excessively long (under ~2000 chars for the system prompt)
+        assert len(prompt) < 3000

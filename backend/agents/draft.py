@@ -84,11 +84,62 @@ except ImportError:
     SystemMessage = None  # type: ignore[assignment]
 
 
+def _build_seller_intelligence_section(seller_profile: SellerProfile) -> str:
+    """Build the seller intelligence section for the system prompt.
+
+    Returns empty string if no intelligence is available.
+    """
+    intelligence = seller_profile.get("seller_intelligence")
+    if not intelligence:
+        return ""
+
+    parts: list[str] = []
+
+    differentiators = intelligence.get("differentiators", [])
+    if differentiators:
+        diff_list = "\n".join(f"  - {d}" for d in differentiators[:5])
+        parts.append(f"Key differentiators:\n{diff_list}")
+
+    sales_plays = intelligence.get("sales_plays", [])
+    if sales_plays:
+        plays_list = "\n".join(
+            f"  - {sp.get('play', '')} (category: {sp.get('category', 'general')})"
+            for sp in sales_plays[:5]
+        )
+        parts.append(
+            f"Sales plays (select the 1 most relevant to this prospect's signal; omit if none fit):\n{plays_list}"
+        )
+
+    proof_points = intelligence.get("proof_points", [])
+    if proof_points:
+        pp_list = "\n".join(
+            f"  - {pp.get('customer', '')}: {pp.get('summary', '')}"
+            for pp in proof_points[:4]
+        )
+        parts.append(f"Proof points (use only if directly relevant to build credibility):\n{pp_list}")
+
+    competitive = intelligence.get("competitive_positioning", [])
+    if competitive:
+        comp_list = "\n".join(f"  - {c}" for c in competitive[:3])
+        parts.append(f"Competitive positioning:\n{comp_list}")
+
+    if not parts:
+        return ""
+
+    return (
+        "\n\n## Seller Intelligence\n"
+        + "\n\n".join(parts)
+        + "\n\nReference specific differentiators and proof points where relevant to the "
+        "prospect's situation. Do not list all of them — pick the 1-2 most compelling for "
+        "this specific persona."
+    )
+
+
 def _build_draft_system_prompt(
     seller_profile: Optional[SellerProfile],
     few_shot_examples: list,
 ) -> str:
-    """Build the system prompt with seller profile and few-shot memory examples."""
+    """Build the system prompt with seller profile, intelligence, and few-shot memory examples."""
     parts: list[str] = [
         "You are writing a cold outreach email as a senior practitioner — not a salesperson. "
         "Your goal is to start a genuine conversation, not to sell anything. "
@@ -112,6 +163,11 @@ def _build_draft_system_prompt(
             "Only reference this if there is a clear, specific connection to the inferred pain point. "
             "Do not force it."
         )
+
+        # Inject seller intelligence if available
+        intelligence_section = _build_seller_intelligence_section(seller_profile)
+        if intelligence_section:
+            parts.append(intelligence_section)
     else:
         parts.append("\n\nNo seller profile — write in vendor-agnostic terms.")
 
