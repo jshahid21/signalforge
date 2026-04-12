@@ -86,6 +86,16 @@ async def regenerate_draft(
     )
 
     if draft is not None:
+        # Log rejection feedback for the previous draft (regeneration = rejection)
+        old_draft = cs.get("drafts", {}).get(persona_id)
+        if old_draft and old_draft.get("run_id"):
+            from backend.utils.langsmith_feedback import log_draft_feedback
+            log_draft_feedback(
+                run_id=old_draft["run_id"],
+                approved=False,
+                comment=body.override_reason,
+            )
+
         # Update in-memory state
         drafts = dict(cs.get("drafts", {}))
         drafts[persona_id] = draft
@@ -140,6 +150,11 @@ async def approve_draft(
     persona = personas.get(persona_id)
     if persona is None:
         raise HTTPException(status_code=404, detail="Persona not found")
+
+    # Log approval feedback to LangSmith
+    if draft.get("run_id"):
+        from backend.utils.langsmith_feedback import log_draft_feedback
+        log_draft_feedback(run_id=draft["run_id"], approved=True)
 
     # Mark draft as approved in memory
     draft = dict(draft)

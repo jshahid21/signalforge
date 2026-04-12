@@ -333,15 +333,23 @@ async def run_draft(
     # Attempt LLM call with 1 retry (2 total attempts); DRAFT_QUALITY if both fail
     parsed = None
     cost_incurred = 0.0
+    trace_run_id: str | None = None
     for _attempt in range(2):
         try:
             llm = _make_llm(llm_provider, llm_model, temperature=0.3)
-            response = await llm.ainvoke([
-                SystemMessage(content=system_prompt),
-                HumanMessage(content=user_prompt),
-            ])
+            # Generate a deterministic run_id so we can link LangSmith feedback later
+            import uuid as _uuid
+            attempt_run_id = str(_uuid.uuid4())
+            response = await llm.ainvoke(
+                [
+                    SystemMessage(content=system_prompt),
+                    HumanMessage(content=user_prompt),
+                ],
+                config={"run_id": attempt_run_id},
+            )
             attempt_parsed = _parse_draft_response(str(response.content))
             cost_incurred += _LLM_COST
+            trace_run_id = attempt_run_id
             if attempt_parsed is not None:
                 parsed = attempt_parsed
                 break
@@ -358,6 +366,7 @@ async def run_draft(
             confidence_score=float(confidence_score),
             approved=False,
             version=version,
+            run_id=trace_run_id,
         )
     else:
         # Both attempts failed — flag for human review (spec §5.5 DRAFT_QUALITY)
@@ -377,6 +386,7 @@ async def run_draft(
             confidence_score=float(confidence_score),
             approved=False,
             version=version,
+            run_id=trace_run_id,
         )
 
     return draft, cost_incurred

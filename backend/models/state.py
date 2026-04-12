@@ -102,6 +102,7 @@ class Draft(TypedDict):
     confidence_score: float             # Inherited from solution mapping
     approved: bool
     version: int                        # Starts at 1; increments on regeneration
+    run_id: NotRequired[Optional[str]]  # LangSmith run ID for feedback linkage
 
 
 class CostMetadata(TypedDict):
