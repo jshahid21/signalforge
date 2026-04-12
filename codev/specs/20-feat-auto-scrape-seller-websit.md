@@ -58,6 +58,7 @@ Without this intelligence:
   - **Sales plays**: Common use cases and value propositions mapped to problem categories
   - **Proof points**: Customer logos, case study summaries, quantified outcomes
   - **Competitive positioning**: How the seller differentiates vs alternatives
+- Intelligence categories are strictly typed (Pydantic model nested inside `SellerProfileConfig`): each category is a list of structured entries, not free-form text
 - Intelligence is extracted from the seller's public website using LLM-powered analysis
 - Intelligence is cached persistently (not re-scraped every session)
 - Users can trigger re-scraping on demand and view/edit extracted intelligence
@@ -92,10 +93,10 @@ Without this intelligence:
 ## Constraints
 
 ### Technical Constraints
-- Must reuse the existing `web_crawler.py` tool for HTML extraction (no new scraping dependencies)
+- Must reuse the existing `web_crawler.py` tool for HTML extraction (no new scraping dependencies). Note: `web_crawler.py` currently strips all HTML including `<a>` tags, so link discovery for subpage crawling requires adding an `extract_links` function that parses links *before* stripping HTML.
 - Must extend existing `SellerProfile`/`SellerProfileConfig` models (not replace them)
 - LLM extraction must work with the configured `llm_provider`/`llm_model` from user settings
-- Scraping happens during setup or on-demand — not during pipeline execution (to avoid latency and cost per session)
+- Scraping happens during setup or on-demand — not during pipeline execution (to avoid latency and cost per session). The frontend must show a clear loading/progress state during extraction (up to 60s) to avoid UX confusion.
 - Must handle websites that block crawlers, have CAPTCHAs, or return errors gracefully
 - Website scraping should target key pages: homepage, product/solutions pages, case studies/customers, about page
 - Page discovery should be best-effort from homepage links (not a full site crawl)
@@ -172,9 +173,9 @@ Without this intelligence:
 - [x] None — the issue description and codebase analysis provide sufficient clarity
 
 ### Important (Affects Design)
-- [ ] How many pages should we crawl per website? Recommendation: Up to 10 pages (homepage + up to 9 discovered subpages matching patterns like /product, /solutions, /customers, /case-studies, /about)
-- [ ] Should we support JavaScript-rendered SPAs? Recommendation: No — `web_crawler.py` uses basic HTTP fetch + HTML parsing. If a site requires JS rendering, the fallback is manual entry. This can be enhanced later.
-- [ ] Should seller intelligence be versioned? Recommendation: No — a single cached version with a `last_scraped` timestamp is sufficient. Users can re-scrape to update.
+- [x] How many pages should we crawl per website? **Decision**: Up to 10 pages (homepage + up to 9 discovered subpages matching patterns like /product, /solutions, /customers, /case-studies, /about). Link discovery requires parsing `<a href>` tags from homepage HTML *before* stripping tags — the existing `web_crawler.py` strips HTML aggressively, so an `extract_links` capability must be added.
+- [x] Should we support JavaScript-rendered SPAs? **Decision**: No — `web_crawler.py` uses basic HTTP fetch + HTML parsing. If a site requires JS rendering, the fallback is manual entry. This can be enhanced later.
+- [x] Should seller intelligence be versioned? **Decision**: No — a single cached version with a `last_scraped` timestamp is sufficient. Users can re-scrape to update.
 
 ### Nice-to-Know (Optimization)
 - [ ] Could we periodically auto-refresh intelligence? Recommendation: Out of scope — manual re-scrape is sufficient for v1
@@ -185,7 +186,7 @@ Without this intelligence:
 - **Storage**: Seller intelligence adds < 10KB to config file
 
 ## Security Considerations
-- **URL Validation**: Website URL must be validated (HTTPS preferred, valid domain)
+- **URL Validation**: Website URL must be validated (HTTPS required; HTTP URLs are rejected with a warning)
 - **SSRF Prevention**: Only scrape user-provided URLs, not URLs discovered recursively beyond one hop from homepage
 - **Content Sanitization**: Crawled content is passed to LLM as text (HTML stripped by web_crawler.py), no raw HTML execution
 - **Data Privacy**: Seller intelligence is stored locally in `~/.signalforge/config.json`, same as existing config
@@ -201,6 +202,8 @@ Without this intelligence:
 5. **Manual edit**: User edits extracted intelligence in Settings → changes are persisted → drafts use edited values
 6. **Draft enrichment**: Draft for cost-optimization signal references FinOps sales play → Draft for security signal references compliance differentiator
 7. **Partial extraction**: Some intelligence categories are empty (e.g., no case studies on site) → non-empty categories still used → no errors
+8. **LLM extraction failure**: Website crawl succeeds but LLM call fails (API error, rate limit, malformed response) → graceful error → intelligence remains empty → drafts use fallback
+9. **Wrong URL**: User provides a URL that is not their company website → LLM extracts whatever is on the page → user can review and re-scrape with correct URL or manually edit
 
 ### Non-Functional Tests
 1. **Timeout handling**: Slow website responds after crawler timeout → graceful degradation
@@ -221,9 +224,22 @@ Without this intelligence:
 | Seller intelligence becomes stale over time | Low | Low | Manual re-scrape button; `last_scraped` timestamp shown in UI |
 | Adding seller intelligence makes drafts too long/verbose | Low | Medium | Draft prompt instructs LLM to select only the most relevant 1-2 differentiators/plays, not dump everything |
 | Breaking existing draft generation for users without website URL | Low | High | Conditional injection — if intelligence is empty, use existing behavior unchanged |
+| LLM extraction API failure (rate limit, timeout, malformed response) | Low | Medium | Treat as scraping failure — graceful fallback, user can retry |
 
 ## Expert Consultation
-<!-- Porch will run 3-way consultation automatically -->
+**Date**: 2026-04-12
+**Models Consulted**: Claude (Opus), Gemini Pro (Codex unavailable — usage limit)
+
+**Sections Updated**:
+- **Open Questions**: Resolved all 3 "Important" questions from open → decided (page count, SPA support, versioning)
+- **Constraints**: Added note about `web_crawler.py` needing `extract_links` for link discovery before HTML stripping
+- **Constraints**: Added UX requirement for loading/progress state during extraction
+- **Desired State**: Added requirement for strictly typed Pydantic model for intelligence categories
+- **Test Scenarios**: Added LLM extraction failure scenario (#8) and wrong-URL edge case (#9)
+- **Security**: Strengthened URL validation from "HTTPS preferred" to "HTTPS required"
+- **Risks**: Added LLM extraction API failure risk row
+
+All consultation feedback has been incorporated into the relevant sections above.
 
 ## Approval
 - [ ] Technical Lead Review
