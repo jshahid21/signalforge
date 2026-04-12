@@ -13,6 +13,15 @@ When tracing is enabled, every pipeline run emits a trace to LangSmith containin
 
 Traces are grouped under the `signalforge` project in LangSmith by default.
 
+### Draft Feedback
+
+When a user approves or rejects (regenerates) a draft, structured feedback is logged to LangSmith via `client.create_feedback()`:
+
+- **Approve** → `score=1.0`, key=`draft-quality`
+- **Regenerate** → `score=0.0`, key=`draft-quality`, with optional `override_reason` as comment
+
+This ties the human-in-the-loop to LangSmith's feedback-driven analytics, enabling analysis of which prompts produce approved drafts vs. rejected ones. Feedback is a graceful no-op when tracing is disabled.
+
 ## Enabling Tracing
 
 Set the following environment variables in your `.env` file (copy from `.env.example`):
