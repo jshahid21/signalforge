@@ -259,19 +259,24 @@ with your food.
 
 **Where you see this in SignalForge:**
 
+Each pipeline stage is a separate graph node. Inside each node, all companies
+run in parallel using `asyncio.gather()`:
+
 ```python
-# backend/pipeline.py — the company pipeline
-async def company_pipeline(input):
-    # Each await lets other companies run while this one waits
-    cs, cost1 = await run_signal_ingestion(cs, ...)    # wait for API
-    cs, cost2 = await run_signal_qualification(cs, ...) # wait for LLM
-    cs, cost3 = await run_research(cs, ...)             # wait for LLM
-    ...
+# backend/pipeline.py — inside each stage node
+async def _run_stage_node(state, stage_name, stage_fn):
+    active_companies = [...]  # companies ready for this stage
+
+    # asyncio.gather runs all companies at the same time
+    results = await asyncio.gather(*[
+        stage_fn(cs=cs, ...)       # each company awaits its own LLM call
+        for cid, cs in active_companies
+    ])
+    return merged_results
 ```
 
-Five companies call this function at the same time (via Send). While company A
-is `await`ing its LLM response, company B's code runs. That's why 5 companies
-don't take 5x the time.
+While company A is `await`ing its LLM response, company B's LLM call runs.
+That's why 5 companies don't take 5x the time — they all wait concurrently.
 
 **Running things in background:**
 

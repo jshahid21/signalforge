@@ -134,9 +134,12 @@ Most candidates have built tutorials. You have a real app with real problems.
 
 **Your talking points:**
 
-> "I hit the Send() serialization issue with checkpointers — that's not in any
-> tutorial. I had to understand how LangGraph's internals work to design a
-> workaround. That's the kind of problem Deployed Engineers help customers solve."
+> "I hit the Send() serialization issue with checkpointers — Send objects can't
+> be saved to disk because they contain live Python function references. That's
+> not in any tutorial. I first worked around it by moving HITL outside the graph,
+> then later refactored away from Send entirely — each stage became its own node
+> with asyncio.gather for parallelism. That's the kind of problem Deployed
+> Engineers help customers solve."
 
 > "I built the full LangSmith integration — not just tracing, but structured
 > traces with @traceable, feedback logging on draft approve/reject, and
@@ -186,22 +189,23 @@ You've BEEN the customer. You can empathize with the people you'd be helping.
 Use the HITL story. It has everything: a real problem, investigation, a
 framework limitation, a creative workaround, and a path forward.
 
-> "My pipeline processes multiple companies in parallel using LangGraph's Send.
-> After generating personas, I needed to pause for human review — the user picks
-> which personas to target before emails are generated.
+> "My pipeline originally used LangGraph's Send to process multiple companies
+> in parallel. After generating personas, I needed to pause for human review.
 >
-> LangGraph has interrupt() for this, but when you resume, the checkpointer
-> needs to save and restore the graph state. Our state included Send objects
-> from the parallel dispatch, and the checkpointer couldn't serialize them.
-> The resume would crash.
+> LangGraph has interrupt() for this — it saves the graph state and resumes
+> later. But the save system — the checkpointer — needs to convert everything
+> to storable data, like JSON. Send objects are live Python objects with
+> function references — they can't be converted. Think of it like trying to
+> save an ongoing phone call to a file. The resume would crash.
 >
-> I moved the human interaction outside the graph entirely. The graph runs
-> computation and exits with a flag. The REST API handles the pause, collects
-> the user's selection, and calls synthesis and draft generation directly. It's
-> actually a cleaner separation — the graph does computation, the API does
-> interaction.
+> I solved it in two steps. First, I moved the human interaction outside the
+> graph — the graph runs to completion, exits with a flag, and the REST API
+> handles the pause and resume. Second, I later refactored the entire graph
+> — instead of one big node with Send, each stage became its own node. Companies
+> run in parallel inside each node using asyncio.gather. No more Send objects
+> means no serialization problem, and as a bonus I got real-time streaming
+> because astream fires at every node boundary.
 >
-> Looking forward, LangGraph's newer Functional API with @task decorators might
-> solve this, because each task's result is individually checkpointed. I could
-> keep the StateGraph for the main pipeline and use the Functional API for
-> the HITL flow — they coexist in the same app."
+> The evolution was: Send for parallelism → hit checkpointer limitation →
+> HITL workaround → full refactor to separate nodes. Each step taught me
+> something deeper about how LangGraph works internally."
