@@ -86,21 +86,22 @@ Implements the incremental enrichment approach from the spec. Work is broken int
 - Add API endpoint for manual trigger
 
 #### Deliverables
-- [ ] `auto_link_intelligence()` function in `backend/config/capability_map.py`
-- [ ] Integration with `seller_intelligence.py` — auto-link runs after successful scrape
+- [ ] `auto_link_intelligence()` function in `backend/agents/seller_intelligence.py` (keeps LLM dependency in the agent layer, not the pure data-loading `capability_map.py`)
+- [ ] Integration with `extract_seller_intelligence()` — auto-link runs after successful scrape
 - [ ] `POST /api/settings/capability-map/auto-link` endpoint
 - [ ] Unit tests for auto-linking with mocked LLM responses
 
 #### Implementation Details
 
-**`auto_link_intelligence()` in `backend/config/capability_map.py`**:
-- Takes `CapabilityMap` + `SellerIntelligence` as input
+**`auto_link_intelligence()` in `backend/agents/seller_intelligence.py`**:
+- Takes `CapabilityMap` + `SellerIntelligence` + LLM config as input
 - Makes a single LLM call with:
   - List of capability entries (id, label, solution_areas)
   - Full scraped intelligence (differentiators, sales_plays, proof_points)
   - Instruction: return JSON mapping `capability_id → {differentiators: [...], sales_plays: [...], proof_points: [...]}`
+- **Truncation**: If total prompt exceeds ~8K tokens, truncate intelligence lists to top 10 items per category. Capability entries are always included in full (typically 3-6 entries).
 - Parses LLM response and populates each `CapabilityMapEntry`'s new fields
-- Saves updated capability map via `save_capability_map()`
+- Saves updated capability map via `save_capability_map()` (imported from `capability_map.py`)
 - Returns the mapping for UI display
 
 **Integration with scraping**:
@@ -127,15 +128,18 @@ Implements the incremental enrichment approach from the spec. Work is broken int
 #### Objectives
 - Research agent classifies target company industry
 - Solution mapping returns `matched_capability_ids`
-- Synthesis uses matched capability enrichment data
+- Persona generation uses industry for industry-specific titles
+- Synthesis uses matched capability enrichment data + industry context
 - Draft uses explicit capability → sales_play → proof_point chain
 - All agents handle missing/stale data gracefully
 
 #### Deliverables
 - [ ] Updated research agent: industry classification from fixed taxonomy
 - [ ] Updated solution mapping: return `matched_capability_ids` alongside solution_areas
-- [ ] Updated synthesis: incorporate matched capability's differentiators + proof_points
+- [ ] Updated persona generation: use industry for industry-specific persona titles
+- [ ] Updated synthesis: incorporate matched capability's differentiators + proof_points + industry
 - [ ] Updated draft: use explicit enrichment chain
+- [ ] Updated pipeline: pass `capability_map` to synthesis and draft nodes; ensure availability on HITL resume path
 - [ ] Integration tests: verify data flows through full pipeline
 - [ ] Stale ID handling tests
 
@@ -150,15 +154,23 @@ Implements the incremental enrichment approach from the spec. Work is broken int
 - In `run_research()`, set `cs["industry"] = industry_result` after gathering sub-tasks
 
 **Solution mapping** (`backend/agents/solution_mapping.py`):
+- **Critical**: Update `_capability_map_to_text()` to include entry `id` in the output (currently only shows `label`). Without the `id`, the LLM cannot return valid `matched_capability_ids`. New format: `- [id: data-platform] Data Platform | signals: ... | areas: ...`
 - Update `_build_solution_mapping_prompt()` to instruct LLM to also return `matched_capability_ids` — the IDs of capability entries whose solution_areas best match
-- Update `_parse_solution_mapping_response()` to extract `matched_capability_ids` (default `[]`)
+- Update `_parse_solution_mapping_response()` to extract `matched_capability_ids` (default `[]` if field is absent from LLM response — graceful handling required)
 - In `run_solution_mapping()`, populate `SolutionMappingOutput["matched_capability_ids"]`
 
+**Persona generation** (`backend/agents/persona_generation.py`):
+- Update `_build_persona_customization_prompt()` (or equivalent persona title generation) to accept `industry: Optional[str]`
+- When `industry` is available, adjust persona titles to be industry-specific (e.g., "VP of Engineering" → "VP of Engineering, FinTech" or "Head of Clinical Data" for healthcare)
+- When `industry` is `None`, generate generic titles (current behavior)
+- Pass `industry` from `CompanyState` in `run_persona_generation()`
+
 **Synthesis** (`backend/agents/synthesis.py`):
-- Update `_build_synthesis_prompt()` to accept optional enrichment context (differentiators, proof_points from matched capabilities)
+- Update `_build_synthesis_prompt()` to accept optional enrichment context (differentiators, proof_points from matched capabilities) AND `industry`
+- Include industry in the prompt context: "Target company industry: {industry}" when available
 - In `run_synthesis()`, look up matched capability entries and extract their enrichment data
 - Pass enrichment data to the prompt as "Seller's specific angle on this problem"
-- If no enrichment data available, synthesis works as before (no degradation)
+- If no enrichment data or industry available, synthesis works as before (no degradation)
 
 **Draft** (`backend/agents/draft.py`):
 - Update `_build_seller_intelligence_section()` to accept matched capability enrichment data
@@ -168,13 +180,17 @@ Implements the incremental enrichment approach from the spec. Work is broken int
 
 **`company_pipeline` node** (`backend/pipeline.py`):
 - Ensure `capability_map` object is passed through to synthesis and draft nodes (currently only passed to signal ingestion/qualification/solution_mapping)
+- **HITL resume path**: When the pipeline resumes after persona selection, it re-enters `company_pipeline` with `skip_to_synthesis=True`. Verify that `capability_map` is available in the `CompanyInput` payload on resume (it's set at dispatch time via `input.get("capability_map")`). If the capability map was modified between pause and resume, the resume uses the version from dispatch — this is acceptable since the pipeline should use a consistent snapshot.
 
 #### Evaluation Criteria
 - Industry classification populates `CompanyState.industry` correctly
 - `matched_capability_ids` flows from solution_mapping through synthesis to draft
+- Persona titles reflect industry when available
+- Synthesis prompt includes industry context and capability enrichment data
 - Stale capability IDs (deleted entries) are skipped with warning log
 - Drafts with enrichment data reference specific differentiators/proof_points
 - Pipeline works unchanged when no enrichment data exists
+- HITL resume path correctly passes `capability_map` to synthesis/draft
 
 ---
 
@@ -278,4 +294,18 @@ class SellerProfile(TypedDict):
 
 ## Consultation Log
 
-*To be populated after 3-way consultation.*
+### Iteration 1 — Plan Review
+
+**Gemini** (VERDICT: REQUEST_CHANGES, CONFIDENCE: HIGH):
+- Added `persona_generation.py` updates to Phase 3 — spec requires industry-specific persona titles
+- Fixed `_capability_map_to_text()` to include entry `id` — without it, LLM can't return valid `matched_capability_ids`
+- Added `industry` to synthesis prompt context
+
+**Claude** (VERDICT: COMMENT, CONFIDENCE: HIGH):
+- Confirmed persona_generation gap (same as Gemini)
+- Moved `auto_link_intelligence()` from `capability_map.py` to `seller_intelligence.py` — keeps LLM dependencies in agent layer
+- Added truncation/chunking strategy for auto-linking LLM call
+- Added HITL resume path verification — ensure `capability_map` available when pipeline resumes after persona selection
+- Added explicit handling note for missing `matched_capability_ids` in LLM response parsing
+
+**Codex**: Unavailable — usage limit reached.
