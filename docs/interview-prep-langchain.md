@@ -91,21 +91,35 @@ A graph is just **boxes connected by arrows**. Each box does something. The arro
 In SignalForge, our graph looks like this:
 
 ```
-[Orchestrator] → [Company Pipeline] → [HITL Gate] → [Done]
+[Orchestrator] → [Signal Ingestion] → [Signal Qualification] → [Research]
+    → [Solution Mapping] → [Persona Generation] → [HITL Gate] → [Done]
 ```
 
-That's 3 boxes (called **nodes**) connected by arrows (called **edges**).
+That's 7 boxes (called **nodes**) connected by arrows (called **edges**).
+Each pipeline stage is its own node, so when the graph runs, it fires a
+streaming event at every stage boundary — this is how our progress bar works.
 
-**Where in the code:** `backend/pipeline.py` lines 228-244
+**Where in the code:** `backend/pipeline.py` lines 221-240
 
 ```python
-graph = StateGraph(AgentState)                          # Create the graph
-graph.add_node("orchestrator", orchestrator_node)       # Add box 1
-graph.add_node("company_pipeline", company_pipeline)    # Add box 2
-graph.add_node("hitl_gate", hitl_gate_node)             # Add box 3
-graph.add_edge("company_pipeline", "hitl_gate")         # Arrow: box 2 → box 3
-graph.add_edge("hitl_gate", END)                        # Arrow: box 3 → done
-graph.set_entry_point("orchestrator")                   # Start at box 1
+graph = StateGraph(AgentState)
+
+graph.add_node("orchestrator", orchestrator_node)
+graph.add_node("signal_ingestion", signal_ingestion_node)
+graph.add_node("signal_qualification", signal_qualification_node)
+graph.add_node("research", research_node)
+graph.add_node("solution_mapping", solution_mapping_node)
+graph.add_node("persona_generation", persona_generation_node)
+graph.add_node("hitl_gate", hitl_gate_node)
+
+graph.set_entry_point("orchestrator")
+graph.add_edge("orchestrator", "signal_ingestion")
+graph.add_edge("signal_ingestion", "signal_qualification")
+graph.add_edge("signal_qualification", "research")
+graph.add_edge("research", "solution_mapping")
+graph.add_edge("solution_mapping", "persona_generation")
+graph.add_edge("persona_generation", "hitl_gate")
+graph.add_edge("hitl_gate", END)
 ```
 
 ### What is "state"?
@@ -138,26 +152,60 @@ An edge is an arrow saying **"after this node finishes, go to that node next."**
 
 A **conditional edge** is an arrow that says "after this node, **decide** where to go based on some logic." In our case, the orchestrator uses a conditional edge to dispatch companies.
 
-### What is `Send()`?
+### What is `Send()`? (and why we moved away from it)
 
-This is how LangGraph does **parallel processing**. Instead of going to one next node, you can send **multiple copies** of work to the same node.
+`Send()` is LangGraph's way to do **parallel processing**. Instead of going
+to one next node, you send **multiple copies** of work to the same node.
 
-In SignalForge: if you enter 5 company names, the orchestrator creates 5 `Send()` objects — one per company. LangGraph runs all 5 in parallel.
-
-**Where in the code:** `backend/agents/orchestrator.py` lines 161-187
+**Our original design:** The orchestrator created 5 `Send()` objects — one per
+company — and LangGraph ran all 5 copies of `company_pipeline` in parallel.
 
 ```python
+# OLD APPROACH (we no longer use this)
 def dispatch_companies(state):
     sends = []
     for company_id, company_state in state["company_states"].items():
         sends.append(Send("company_pipeline", {
             "company_state": company_state,
-            # ... other data this company needs
         }))
-    return sends  # LangGraph runs all of these at the same time
+    return sends  # LangGraph runs all at the same time
 ```
 
-**Plain English:** "For each company, send a work package to the company_pipeline node. Run them all at once."
+**The problem with Send() — explained simply:**
+
+LangGraph has a "save game" feature called a checkpointer. It saves the state
+of the graph after each step, so you can pause and resume later. This is how
+human-in-the-loop is supposed to work — pause the graph, wait for the human,
+resume from the saved state.
+
+But the saved state needs to be converted to data that can be stored (like
+JSON). `Send()` objects are **Python objects in memory** — they contain
+function references and complex data that can't be cleanly converted to JSON.
+
+**It's like trying to photocopy a live phone call.** You can photocopy a
+piece of paper (regular data), but you can't photocopy an ongoing conversation
+(a Send object). The checkpointer tries to "photocopy" the entire graph state,
+including the Send objects, and it fails.
+
+**Our new design:** Instead of Send(), each stage is a separate graph node.
+Inside each node, all companies run in parallel using Python's `asyncio.gather()`.
+
+```python
+# NEW APPROACH — each stage node processes all companies in parallel
+async def signal_ingestion_node(state):
+    active_companies = [...]  # filter companies ready for this stage
+    results = await asyncio.gather(*[      # run all at once
+        run_signal_ingestion(cs) for cs in active_companies
+    ])
+    return merged_results
+```
+
+**Why this is better:**
+1. No Send objects = no serialization problem
+2. Each stage is a real graph node = `astream()` fires at every boundary
+3. LangGraph Studio shows the full 7-node pipeline visually
+4. Parallel processing still happens — just inside each node instead of across nodes
+5. The checkpointer could work now (no Send objects to serialize)
 
 ### What are "reducers"?
 
@@ -229,67 +277,122 @@ The Functional API uses:
 These are the stories you'll tell in interviews. Each one shows you understand
 trade-offs, not just features.
 
-### Story 1: "Why we run companies in parallel with Send()"
+### Story 1: "How we handle parallel processing and how the design evolved"
 
 **The situation:** A user enters 5 company names. Processing each takes 30-60 seconds (multiple LLM calls, API searches). Running them one by one = 3-5 minutes of waiting.
 
-**What we did:** Used LangGraph's `Send()` to dispatch all 5 simultaneously. Each company gets its own isolated work package.
+**Version 1 — Send():** We used LangGraph's `Send()` to dispatch all 5 companies
+simultaneously, each running the entire pipeline independently. The challenge
+was merging results — we used Annotated reducers (`operator.add` for costs,
+`merge_dict` for per-company state) to safely combine parallel branches.
 
-**The challenge:** When 5 branches run in parallel and all finish at different times, how do you combine their results? Company A's cost was $0.08, Company B's was $0.12 — the total needs to be $0.20, not just the last one to finish.
+**The problem:** Send() worked for parallelism, but broke human-in-the-loop.
+When the graph paused and tried to save state, the checkpointer couldn't
+serialize the Send objects (see Story 2). Also, the entire per-company pipeline
+was one big node, so streaming only fired once per company — the progress bar
+didn't update in real-time.
 
-**How we solved it:** Annotated reducers on the state. `total_cost_usd: Annotated[float, operator.add]` tells LangGraph "add these up." `company_states: Annotated[dict, merge_dict]` tells it "merge the dictionaries so each company keeps its own results."
+**Version 2 — separate nodes with asyncio.gather():** We refactored the graph
+from 3 nodes to 7 — each pipeline stage is its own node. Inside each node,
+all companies run in parallel using Python's `asyncio.gather()`. This gives
+us:
+- Real-time streaming (astream fires at every node boundary)
+- No Send objects (no serialization issue)
+- Same parallel performance (gather runs companies concurrently within each stage)
 
-**Look at:** `backend/agents/orchestrator.py` (the Send dispatch) and `backend/models/state.py` (the reducers)
+The reducers are still there — costs still add up, company states still merge
+correctly — but now they work within each node's return, not across Send
+branches.
+
+**Look at:** `backend/pipeline.py` (the 7-node graph + `_run_stage_node()` helper) and `backend/models/state.py` (the reducers)
 
 ---
 
 ### Story 2: "Why our human-in-the-loop gate lives outside the graph"
 
-**The situation:** After generating personas, we want the user to review and select which ones to target before generating emails. The pipeline needs to **pause** and **wait** for human input.
+**The situation:** After generating personas, we want the user to review and
+select which ones to target before generating emails. The pipeline needs to
+**pause** and **wait** for human input.
 
-**What LangGraph offers:** `interrupt()` — it pauses the graph and saves state via a checkpointer. When the user responds, you resume from where you left off.
+**What LangGraph offers:** `interrupt()` — it pauses the graph and saves state
+via a checkpointer. When the user responds, you resume from where you left off.
 
-**What went wrong:** When you resume, LangGraph tries to re-run the orchestrator's dispatch function, which produces `Send()` objects. But the checkpointer (the save system) **can't save `Send()` objects** — it doesn't know how to convert them to data it can store. So the resume crashes.
+**What went wrong (in our original Send-based design):** When you resume,
+LangGraph tries to re-run the orchestrator's dispatch function, which produced
+`Send()` objects. The checkpointer needs to save these to disk so it can
+restore them later. But `Send()` objects contain Python function references
+and complex data that **can't be converted to JSON or stored in a database**.
 
-**What we did instead:** We let the graph run all the way through and exit. When it exits, a flag says "these companies need persona selection." Our REST API handles the pause — the frontend shows the persona picker, the user selects, and the API calls synthesis and draft generation directly. No graph re-entry.
+**Think of it like a bookmark.** A checkpointer is like putting a bookmark in
+a book so you can come back to the same page. But `Send()` objects are like
+sticky notes with live phone numbers that stop working when you close the book.
+When you reopen the book, the phone numbers are dead — the resume crashes.
 
-**Why this is actually better:** The graph does computation. The API does user interaction. Clean separation. But it IS a LangGraph limitation.
+**What we did instead:** The graph runs all the way through and exits. The
+`hitl_gate` node sets a flag: "these companies need persona selection." Our
+REST API handles the pause:
+1. Frontend shows the persona picker
+2. User selects personas
+3. API calls synthesis and draft generation **directly** — no graph re-entry
 
-**How the Functional API could help:** With `@task` decorators, each stage's result is individually checkpointed. So `interrupt()` wouldn't need to re-serialize Send objects — it would just pick up from the last completed task. This is the newer approach that could bring HITL back into the graph.
+**Why this is actually good:** The graph handles computation. The API handles
+user interaction. Clean separation of concerns.
 
-**You can use both APIs together.** We could keep our StateGraph for the main pipeline and add a Functional API `@entrypoint` specifically for the HITL → synthesis → draft flow. They coexist in the same app.
+**Note:** After refactoring to separate nodes (Story 3), we no longer use
+Send() at all. The checkpointer serialization issue is gone. We could now
+explore using `interrupt()` for HITL since there are no Send objects in the
+state. Or we could use the Functional API's `@entrypoint`/`@task` pattern
+where each task result is individually saved. Both approaches could bring
+HITL back into the graph — this is future work.
 
 **Look at:** `backend/agents/hitl_gate.py` (the gate) and `backend/api/routes/personas.py` (the resume outside the graph)
 
 ---
 
-### Story 3: "Why the progress bar was stuck and what streaming modes would fix it"
+### Story 3: "Why the progress bar was stuck and how we fixed it with graph design"
 
-**The situation:** Each company has a 5-stage progress bar (Signals → Qualifying → Researching → Mapping → Generating). But it never moved — it stayed on the first stage until everything finished, then jumped to done.
+**The situation:** Each company has a 5-stage progress bar (Signals →
+Qualifying → Researching → Mapping → Generating). But it never moved — it
+stayed on the first stage until everything finished, then jumped to done.
 
-**Root cause:** Our `company_pipeline` function runs all 8 stages inside **one LangGraph node**. LangGraph's streaming (`astream()`) only fires events at **node boundaries** — when one node finishes and the next starts. Since the whole company flow is one node, there's only one event: "company finished."
+**Root cause:** Our original `company_pipeline` function ran all 8 stages
+inside **one LangGraph node**. LangGraph's streaming (`astream()`) only fires
+events at **node boundaries** — when one node finishes and the next starts.
+Since the whole company flow was one node, there was only one event: "company
+finished."
 
-**What we did (bugfix):** Each stage now sets `current_stage` at the start of its function. The session endpoint's `astream` loop picks this up at the node boundary and broadcasts it via WebSocket. The progress bar shows the final state correctly, but doesn't animate in real-time during execution.
+**Think of it like a factory floor.** Imagine a factory where all 5 assembly
+stations are in one room with no walls. A supervisor standing outside can only
+tell you "the room is busy" or "the room is done." Now put walls between each
+station with windows. The supervisor can see: "Station 1 done, Station 2
+working, Stations 3-5 waiting." That's what splitting nodes does — it gives
+the streaming system walls to report on.
 
-**What would really fix it:** LangGraph's `custom` streaming mode. Inside a node, you can call `emit()` to send data to whoever is streaming. Each stage could emit a progress event:
+**What we did:** Refactored the graph from 3 nodes to 7. Each pipeline stage
+is its own node:
 
-```python
-async def company_pipeline(input, config):
-    # Stage 1
-    cs = await run_signal_ingestion(cs, ...)
-    emit({"stage": "signal_ingestion", "status": "done"})  # Real-time event!
-    
-    # Stage 2
-    cs = await run_signal_qualification(cs, ...)
-    emit({"stage": "signal_qualification", "status": "done"})
-    ...
+```
+orchestrator → signal_ingestion → signal_qualification → research
+    → solution_mapping → persona_generation → hitl_gate → END
 ```
 
-No need to split into separate nodes. The `custom` stream mode lets you emit events from inside a node.
+Now `astream()` fires automatically at every stage boundary. The progress bar
+updates in real-time with no extra code — it just reads the events that
+LangGraph naturally emits between nodes.
 
-**Alternative:** The `tasks` streaming mode (with Functional API's `@task`) would automatically emit start/finish events for each task — no manual `emit()` needed.
+Inside each node, all companies still run in parallel via `asyncio.gather()`,
+so we didn't lose any performance.
 
-**Look at:** `backend/pipeline.py` (the monolithic company_pipeline) and `frontend/src/components/ProgressBar.tsx`
+**Other approaches we considered:**
+- `stream_mode="custom"` — lets you manually emit events from inside a node
+  (like adding intercoms between stations). Would work but it's a workaround.
+- Functional API `@task` with `stream_mode="tasks"` — tasks auto-emit
+  start/finish events. Cleaner but requires rewriting to the Functional API.
+
+We went with separate nodes because it uses LangGraph as designed, gives the
+best Studio visualization, and also eliminated the Send() serialization issue.
+
+**Look at:** `backend/pipeline.py` (7-node graph + `_run_stage_node()` helper) and `frontend/src/components/ProgressBar.tsx`
 
 ---
 
@@ -421,25 +524,26 @@ This means:
 
 ### Q: Walk me through your architecture.
 
-> "At a high level, it's a 3-node LangGraph graph.
+> "It's a 7-node LangGraph graph. Each pipeline stage is its own node:
+> orchestrator, signal ingestion, signal qualification, research, solution
+> mapping, persona generation, and an HITL gate.
 >
-> Node 1, the orchestrator, takes company names and dispatches them in parallel using
-> Send — if you enter 5 companies, 5 copies of the pipeline run at the same time.
+> The orchestrator validates input and sets up company states. Then each
+> stage node processes ALL companies in parallel using asyncio.gather —
+> so if you enter 5 companies, all 5 run at the same time within each stage.
 >
-> Node 2, company_pipeline, is where the real work happens. For each company, it runs
-> signal discovery, scoring, research, solution mapping, and persona generation. All
-> sequentially within one node.
+> Because each stage is a separate node, LangGraph's astream fires a
+> streaming event at every stage boundary. Our frontend picks these up
+> via WebSocket and updates the progress bar in real-time.
 >
-> Node 3, hitl_gate, checks if any company needs human persona selection. If so, the
-> graph exits and our REST API takes over for the human interaction part.
+> The state flows through the graph with reducers — rules for merging
+> results. Costs get added up across companies, company results get
+> merged by ID, and failure lists get concatenated.
 >
-> The state flowing through the graph has reducers — rules for combining results from
-> parallel branches. Costs get added up, company results get merged by ID, and lists
-> get concatenated.
->
-> After the human picks personas, the API calls synthesis and draft generation directly,
-> outside the graph. This was a deliberate choice because of a checkpointer limitation
-> with Send objects."
+> At the HITL gate, the graph exits and our REST API takes over. The user
+> picks personas, and the API calls synthesis and draft generation directly.
+> We handle the human interaction outside the graph because it's a cleaner
+> separation — the graph does computation, the API does user interaction."
 
 ### Q: What would you improve?
 
@@ -504,20 +608,23 @@ This means:
 
 ### Q: Tell me about a limitation you hit with LangGraph.
 
-> "The checkpointer can't serialize Send objects.
+> "Early on, we used Send() for parallel company dispatch. It worked great
+> for parallelism, but broke human-in-the-loop. The checkpointer needs to save
+> the graph state when you pause — like a save game. But Send objects are live
+> Python objects with function references that can't be converted to storable
+> data. It's like trying to bookmark an ongoing phone call — when you reopen
+> the book, the call is dead.
 >
-> My pipeline uses Send for parallel company processing. When I tried to add a
-> human-in-the-loop pause using interrupt(), the checkpointer needed to save the
-> graph state. But the state included Send objects from the dispatch function, and
-> it couldn't convert them to storable data.
+> We solved it two ways. First, we moved the human interaction outside the
+> graph — the graph does computation, the API handles the pause and resume.
+> Second, we later refactored away from Send entirely — each pipeline stage
+> became its own graph node, and companies run in parallel within each node
+> using asyncio.gather. No Send objects means no serialization problem, and
+> as a bonus we got real-time streaming for free since astream fires at every
+> node boundary.
 >
-> I solved it by moving the human interaction outside the graph entirely. The graph
-> runs computation, the REST API handles user interaction, and they communicate
-> through shared state in our database.
->
-> If I were redesigning today, I'd look at the Functional API where each @task is
-> individually checkpointed. That might avoid the Send serialization issue since
-> tasks persist their own results."
+> Looking forward, the Functional API with @task decorators could also solve
+> this, since each task's result is individually checkpointed."
 
 ### Q: How do you track cost across parallel LLM calls?
 
@@ -577,7 +684,7 @@ Keep this handy. If you forget a term during the interview, use the plain Englis
 | **Edge** | An arrow connecting boxes | "After orchestrator, go to company_pipeline" |
 | **State** | The shared data clipboard | Company results, costs, status flags |
 | **Reducer** | Rule for combining parallel results | "Add up costs from all companies" |
-| **Send()** | "Run this work package in parallel" | One per company, all run simultaneously |
+| **Send()** | "Run this work package in parallel" | We used this originally, then moved to asyncio.gather inside separate nodes |
 | **Checkpointer** | Save point system | We use our own SQLite instead |
 | **interrupt()** | Pause and wait for a human | We couldn't use it (Send serialization issue) |
 | **@entrypoint** | "This is the main function" (Functional API) | Not used yet, could help with HITL |
@@ -621,10 +728,10 @@ When asked "what would you build next?" — these show you think beyond just cod
 
 ## Part 11: Things You Should Be Ready to Draw on a Whiteboard
 
-1. **The pipeline flow** — 8 boxes in a line with the HITL pause in the middle
-2. **The graph** — 3 nodes (orchestrator → company_pipeline → hitl_gate) with the Send fan-out
-3. **Parallel + reducers** — 5 branches merging costs and results
-4. **The HITL workaround** — graph exits → API pauses → user picks → API calls synthesis directly
+1. **The pipeline flow** — 7 boxes in a line with the HITL gate at the end
+2. **The graph evolution** — started with 3 nodes + Send(), refactored to 7 nodes + asyncio.gather()
+3. **Parallel within nodes** — each node runs all companies via gather(), reducers merge results
+4. **The HITL pattern** — graph exits at hitl_gate → API pauses → user picks → API calls synthesis directly
 5. **The LangSmith flywheel** — tracing → feedback → datasets → eval → prompt improvement
 
 ---
