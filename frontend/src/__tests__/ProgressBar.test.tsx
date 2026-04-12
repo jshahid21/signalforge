@@ -57,6 +57,18 @@ describe('ProgressBar', () => {
     })
   })
 
+  it('shows all stages as done for post-pipeline stages', () => {
+    const postStages = ['awaiting_persona_selection', 'synthesis', 'draft', 'done']
+    for (const stage of postStages) {
+      const { unmount } = render(<ProgressBar currentStage={stage} status="running" />)
+      const bars = screen.getAllByTitle(/Signals|Qualifying|Researching|Mapping|Generating/)
+      bars.forEach(bar => {
+        expect(bar.className).toContain('bg-green-500')
+      })
+      unmount()
+    }
+  })
+
   it('falls back to index 0 for unknown stage names', () => {
     render(<ProgressBar currentStage="unknown_stage" status="running" />)
     const bar = screen.getByLabelText('Signals')

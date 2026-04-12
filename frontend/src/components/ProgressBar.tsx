@@ -14,10 +14,16 @@ const STAGE_LABELS: Record<string, string> = {
   persona_generation: 'Generating',
 }
 
+/** Stages that come after the 5-stage pipeline (post-generation). */
+const POST_PIPELINE_STAGES = ['awaiting_persona_selection', 'synthesis', 'draft', 'done']
+
 function stageIndex(stage: string | undefined | null): number {
   const normalized = String(stage ?? '').toLowerCase()
   const idx = STAGES.indexOf(normalized)
-  return idx === -1 ? 0 : idx
+  if (idx !== -1) return idx
+  // Post-pipeline stages should show all 5 stages as complete
+  if (POST_PIPELINE_STAGES.includes(normalized)) return STAGES.length
+  return 0
 }
 
 interface Props {
