@@ -105,7 +105,23 @@ Write success criteria as testable outcomes ("`--langsmith` flag runs without ra
 not implementation recipes. If a specific mechanism is load-bearing, call out *why* in the
 Risk Assessment so the implementer knows to validate it, not just copy it.
 
+**Decouple HTTP fetch from HTML processing for reusable crawlers** (Spec 20)
+When a web crawler strips HTML in the same function that fetches, callers cannot
+access raw HTML for link discovery or other pre-processing. Split into `fetch_html()`
+(raw HTTP) and `_strip_html_tags()` (processing), then compose in `crawl_url()`.
+This enables reuse: the seller intelligence agent calls `fetch_html()` for link
+discovery, then `_strip_html_tags()` for content extraction, without duplicating
+HTTP logic.
+
+**LLM-driven selection is more robust than keyword heuristics for draft enrichment** (Spec 20)
+When matching sales intelligence (plays, differentiators, proof points) to a prospect's
+context, letting the draft LLM select the most relevant items from a provided list is
+simpler and more robust than building a separate keyword-matching system. The LLM
+already has full signal context and can do nuanced contextual matching that keywords
+cannot. Include all options with selection instructions rather than pre-filtering.
+
 ---
 
 *Updated by Spec 1: Proactive Sales Signal Intelligence Engine (2026-03-27)*
 *Updated by Spec 3: Wire LangSmith Tracing, LangGraph Studio Config, and Eval Dataset (2026-04-10)*
+*Updated by Spec 20: Auto-Scrape Seller Website for Differentiators and Sales Plays (2026-04-12)*

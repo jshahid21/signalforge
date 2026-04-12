@@ -162,6 +162,7 @@ export const settingsApi = {
   addCapabilityMapEntry: (entry: CapabilityMapEntry) => api.post<CapabilityMapEntry>('/settings/capability-map/entries', entry).then(r => r.data),
   deleteCapabilityMapEntry: (id: string) => api.delete(`/settings/capability-map/entries/${id}`).then(r => r.data),
   generateCapabilityMap: (data: Record<string, unknown>) => api.post('/settings/capability-map/generate', data).then(r => r.data),
+  extractSellerIntelligence: (data?: { website_url?: string }) => api.post('/settings/seller-intelligence/extract', data ?? {}).then(r => r.data),
 }
 
 export const memoryApi = {

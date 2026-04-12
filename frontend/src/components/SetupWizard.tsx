@@ -21,6 +21,9 @@ export function SetupWizard({ onComplete }: Props) {
   const [companyName, setCompanyName] = useState('')
   const [portfolioSummary, setPortfolioSummary] = useState('')
   const [portfolioItems, setPortfolioItems] = useState('')
+  const [websiteUrl, setWebsiteUrl] = useState('')
+  const [extracting, setExtracting] = useState(false)
+  const [extractionStatus, setExtractionStatus] = useState<string | null>(null)
 
   // API key fields
   const [jsearch, setJsearch] = useState('')
@@ -36,12 +39,17 @@ export function SetupWizard({ onComplete }: Props) {
 
   async function saveSellerProfile() {
     if (!companyName.trim()) { setError('Company name is required'); return }
+    const url = websiteUrl.trim()
+    if (url && !url.startsWith('https://')) {
+      setError('Website URL must start with https://'); return
+    }
     setSaving(true); setError(null)
     try {
       await settingsApi.putSellerProfile({
         company_name: companyName.trim(),
         portfolio_summary: portfolioSummary.trim(),
         portfolio_items: portfolioItems.split('\n').map(s => s.trim()).filter(Boolean),
+        ...(url ? { website_url: url } : {}),
       })
       setStep('api-keys')
     } catch (e) {
@@ -55,6 +63,16 @@ export function SetupWizard({ onComplete }: Props) {
     setSaving(true); setError(null)
     try {
       await settingsApi.putApiKeys({ jsearch, tavily, llm_provider: llmProvider, llm_model: llmModel })
+      // Trigger intelligence extraction after API keys saved (LLM now available)
+      const url = websiteUrl.trim()
+      if (url) {
+        setExtracting(true)
+        setExtractionStatus('Extracting seller intelligence from website...')
+        settingsApi.extractSellerIntelligence({ website_url: url })
+          .then(() => setExtractionStatus('Seller intelligence extracted successfully!'))
+          .catch(() => setExtractionStatus('Could not extract intelligence — you can retry from Settings later.'))
+          .finally(() => setExtracting(false))
+      }
       setStep('capability-map')
     } catch (e) {
       setError(String(e))
@@ -124,6 +142,14 @@ export function SetupWizard({ onComplete }: Props) {
           </div>
         )}
 
+        {/* Extraction status — persists across steps */}
+        {extractionStatus && (
+          <div className={`mb-4 rounded-md px-3 py-2 text-sm ${extracting ? 'bg-blue-50 text-blue-700 border border-blue-200' : extractionStatus.includes('success') ? 'bg-green-50 text-green-700 border border-green-200' : 'bg-yellow-50 text-yellow-700 border border-yellow-200'}`}>
+            {extracting && <span className="inline-block animate-spin mr-2">&#9696;</span>}
+            {extractionStatus}
+          </div>
+        )}
+
         {/* ── Step 1: Seller Profile ── */}
         {step === 'seller-profile' && (
           <div className="space-y-4">
@@ -146,6 +172,15 @@ export function SetupWizard({ onComplete }: Props) {
                 placeholder="Kubernetes Optimizer&#10;Cost Analytics&#10;Security Scanner"
                 rows={4}
                 className="mt-1 w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700">Company Website URL (optional)</label>
+              <input value={websiteUrl} onChange={e => setWebsiteUrl(e.target.value)}
+                placeholder="https://www.yourcompany.com"
+                className="mt-1 w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+              <p className="mt-1 text-xs text-gray-400">
+                We'll extract differentiators, sales plays, and proof points from your website.
+              </p>
             </div>
             <button onClick={() => void saveSellerProfile()} disabled={saving}
               className="w-full rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50">

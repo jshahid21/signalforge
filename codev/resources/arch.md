@@ -23,7 +23,8 @@ signalforge/
 │   │   ├── persona_generation.py  # Deterministic rule-based persona generation
 │   │   ├── hitl_gate.py     # LangGraph interrupt/resume node for persona selection
 │   │   ├── synthesis.py     # Per-persona buyer insight synthesis
-│   │   ├── draft.py         # Per-persona outreach draft generation with few-shot
+│   │   ├── draft.py         # Per-persona outreach draft generation with few-shot + seller intelligence
+│   │   ├── seller_intelligence.py  # Website scrape → LLM extraction of differentiators, sales plays, proof points
 │   │   ├── memory_agent.py  # SQLite-backed approved draft retrieval
 │   │   └── capability_map_generator.py  # URL crawl → capability map entries
 │   ├── api/
@@ -33,7 +34,8 @@ signalforge/
 │   │       ├── settings.py  # API keys, seller profile, capability map CRUD
 │   │       └── chat.py      # SSE streaming chat assistant endpoint
 │   ├── config/
-│   │   ├── loader.py        # config.yaml loader with required-key validation
+│   │   ├── loader.py        # config.json loader + SellerIntelligence/SalesPlay/ProofPoint models
+│   │   ├── seller_profile.py  # Seller profile read/write helpers (including intelligence)
 │   │   └── capability_map.py  # capability_map.yaml loader
 │   ├── models/
 │   │   ├── state.py         # AgentState, CompanyState, all TypedDicts
@@ -41,7 +43,7 @@ signalforge/
 │   └── tools/
 │       ├── jsearch.py       # JSearchClient (Tier 1 job posting search)
 │       ├── tavily.py        # TavilySearchClient (Tier 2 web search)
-│       └── web_crawler.py   # URL crawl for capability map generation
+│       └── web_crawler.py   # URL crawl + link discovery for capability map and seller intelligence
 ├── frontend/
 │   ├── src/
 │   │   ├── App.tsx          # Root component: session start, company/pipeline state
