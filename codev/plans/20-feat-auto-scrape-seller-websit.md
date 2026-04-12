@@ -44,6 +44,7 @@ Implements the LLM-powered website intelligence extraction approach (Approach 1 
 - [ ] `SellerIntelligence` Pydantic model with four intelligence categories
 - [ ] Updated `SellerProfileConfig` with `website_url` and `seller_intelligence` fields
 - [ ] Updated `SellerProfile` TypedDict with matching fields
+- [ ] `fetch_html()` function in `web_crawler.py` (decoupled HTTP fetch)
 - [ ] `extract_links()` function in `web_crawler.py`
 - [ ] API endpoint updates for seller profile (GET/PUT) to include new fields
 - [ ] Unit tests for all new models, config loading, and link extraction
@@ -77,17 +78,23 @@ class SellerIntelligence(BaseModel):
 
 **Updated `SellerProfile` TypedDict** in `backend/models/state.py`:
 - Add `website_url: str` (optional)
-- Add `seller_intelligence: dict` (serialized SellerIntelligence)
+- Add `seller_intelligence` as a nested `SellerIntelligenceDict` TypedDict (not raw `dict`) for type safety through the LangGraph pipeline
+
+**`fetch_html()` in `backend/tools/web_crawler.py`**:
+- New helper that performs the HTTP fetch and returns raw HTML *without* stripping tags
+- Decouples HTTP fetch from `_strip_html_tags()` so callers can access raw HTML for link discovery
+- Existing `crawl_url()` refactored to call `fetch_html()` then strip tags (preserving existing behavior)
 
 **`extract_links()` in `backend/tools/web_crawler.py`**:
-- Parse `<a href>` tags from raw HTML *before* tag stripping
+- Takes raw HTML (from `fetch_html()`) and a base URL
+- Parses `<a href>` tags from raw HTML
 - Filter to same-domain links matching key patterns: `/product`, `/solutions`, `/platform`, `/customers`, `/case-stud`, `/about`, `/why-`
 - Return deduplicated list of absolute URLs (max 9)
 
 **API route updates** in `backend/api/routes/settings.py`:
 - `GET /settings/seller-profile`: Include `website_url` and `seller_intelligence` in response
 - `PUT /settings/seller-profile`: Accept `website_url` in update payload
-- Seller intelligence is read-only via the profile endpoint (updated via extraction endpoint in Phase 2)
+- `PUT /settings/seller-profile`: Also accepts `seller_intelligence` for manual edits from the Settings Panel (not just extraction)
 
 #### Acceptance Criteria
 - [ ] Config loads correctly with and without `website_url`/`seller_intelligence` (backward compat)
@@ -130,9 +137,10 @@ Revert the commit — no data migration needed since new fields have defaults.
 Core functions:
 1. `extract_seller_intelligence(website_url: str, llm_provider: str, llm_model: str) -> SellerIntelligence`
    - Validate URL (HTTPS required)
-   - Crawl homepage with `crawl_url()`
-   - Extract links with `extract_links()` from raw HTML
-   - Crawl up to 9 discovered subpages (with 1s delay between requests)
+   - Fetch homepage raw HTML with `fetch_html()`
+   - Extract subpage links with `extract_links()` from the raw HTML
+   - Strip homepage HTML to text with existing `_strip_html_tags()`
+   - Crawl up to 9 discovered subpages with `crawl_url()` (with 1s delay between requests)
    - Combine all page text (truncate to ~30K chars to fit LLM context)
    - Call LLM with structured output prompt to extract SellerIntelligence
    - Set `last_scraped` timestamp
@@ -174,6 +182,8 @@ Revert commit — new file with no impact on existing functionality.
 #### Risks
 - **Risk**: LLM produces malformed JSON output
   - **Mitigation**: Use structured output / JSON mode if available; fallback to regex extraction; retry once
+- **Risk**: `robots.txt` compliance
+  - **Mitigation**: Low practical risk since the seller is scraping their own website. The spec mentions respecting robots.txt — the builder should check for `/robots.txt` and skip disallowed paths, but this is best-effort for v1 (seller can always manually enter intelligence if their own site blocks crawlers).
 
 ---
 
@@ -206,13 +216,9 @@ Revert commit — new file with no impact on existing functionality.
   - Existing behavior unchanged (portfolio_items only)
 
 **Sales play matching logic**:
-- Map signal types/categories to sales play categories
-- Example mappings:
-  - Signal mentions "cost", "budget", "spend" → match `cost_optimization` plays
-  - Signal mentions "security", "compliance", "risk" → match `security_compliance` plays
-  - Signal mentions "scale", "performance", "infrastructure" → match `platform_scaling` plays
-- Matching done via keyword overlap between signal content and play categories
-- If no match, include the highest-priority play as a general fallback
+- Rather than hardcoded keyword heuristics, include all sales plays in the draft prompt and let the LLM select the most relevant one(s) based on signal context. This is more robust since the LLM already has full signal context and can do nuanced matching.
+- The prompt provides all plays with their categories and instructs: "Select the 1 sales play most relevant to this prospect's signal. If none are relevant, omit."
+- If no sales plays exist in intelligence, this section is omitted from the prompt.
 
 **Proof point selection**:
 - Prefer proof points from companies in the same industry as the prospect
@@ -359,7 +365,23 @@ Phase 3 and Phase 4 can theoretically proceed in parallel after Phase 2, but wil
 - [ ] Verify no regressions in existing pipeline
 
 ## Expert Review
-<!-- Porch will run 3-way consultation automatically -->
+**Date**: 2026-04-12
+**Models Consulted**: Claude (Opus), Gemini Pro (Codex unavailable — usage limit)
+
+**Key Feedback**:
+- Gemini: Add `fetch_html()` helper to decouple HTTP fetch from HTML stripping (APPROVED)
+- Gemini: Use proper TypedDict for `seller_intelligence` instead of raw `dict` (APPROVED)
+- Claude: Add API write path for manual intelligence edits in Settings (APPROVED)
+- Claude: Note robots.txt handling in Phase 2 (APPROVED)
+- Claude: Use LLM for sales play matching instead of keyword heuristics (APPROVED)
+
+**Plan Adjustments**:
+- Phase 1: Added `fetch_html()` deliverable and refactored `crawl_url()` to use it
+- Phase 1: Changed `seller_intelligence` TypedDict from `dict` to `SellerIntelligenceDict`
+- Phase 1: Extended PUT endpoint to accept `seller_intelligence` for manual edits
+- Phase 2: Updated extraction flow to use `fetch_html()` then `extract_links()`
+- Phase 2: Added robots.txt risk note
+- Phase 3: Replaced keyword-based sales play matching with LLM-driven contextual selection
 
 ## Approval
 - [ ] Technical Lead Review
