@@ -259,11 +259,18 @@ capabilities:
 
 Editable anytime via the Settings panel — add, remove, or refine entries as your portfolio evolves.
 
-### Seller Intelligence
+### Seller Intelligence + Capability Map Integration
 
-During setup, SignalForge auto-scrapes your company's public website to extract structured sales intelligence: differentiators, sales plays, proof points, and competitive positioning. This is injected directly into draft generation so outreach doesn't just reference what you sell — it references *how* you sell it, with the right proof points and competitive framing for each persona.
+During setup, SignalForge auto-scrapes your company's public website to extract structured sales intelligence: differentiators, sales plays, proof points, and competitive positioning. This intelligence is automatically linked to your capability map entries, so when a signal matches a capability, the pipeline already knows your specific angle, proof points, and sales play for that problem.
 
-Configured via the setup wizard's website URL field. The Settings panel lets you view, edit, and re-scrape intelligence as your positioning evolves.
+The integration creates an explicit chain: **signal → matched capability → seller differentiator → relevant sales play → proof point → persona-targeted draft.** No LLM guessing required.
+
+Additional seller context captured:
+- **Target verticals / ICP** — which industries you sell best into
+- **Value metrics** — quantified outcomes ("customers see 40% reduction in deploy time")
+- **Industry classification** — research agent now detects prospect industry for stronger messaging
+
+Sales plays can be manually entered or edited — web scraping catches use cases, but real sales plays are internal knowledge. The Settings panel lets you manage everything: view, edit, re-scrape, and manually enrich capability entries.
 
 ### HITL Persona Gate
 
