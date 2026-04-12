@@ -497,30 +497,34 @@ async def test_memory_injection_passes_few_shot_examples():
         "risk_if_ignored": "Fall behind competitors"
     }"""
 
-    from backend.pipeline import company_pipeline
-    from backend.models.state import CompanyInput
+    from backend.agents.synthesis import run_synthesis
+    import backend.agents.memory_agent as memory_mod
 
     with (
-        patch("backend.pipeline.get_few_shot_examples", return_value=[approved_draft]),
-        patch("backend.pipeline.run_drafts_for_company", new=_intercepting_run_drafts),
+        patch.object(memory_mod, "get_few_shot_examples", return_value=[approved_draft]),
+        patch("backend.agents.draft.run_drafts_for_company", new=_intercepting_run_drafts),
         patch("backend.agents.synthesis.ChatAnthropic") as MockSynthLLM,
     ):
         MockSynthLLM.return_value.ainvoke = AsyncMock(return_value=synth_response)
 
-        input_payload = CompanyInput(
-            company_state=cs,
-            seller_profile={"company_name": "Seller", "portfolio_summary": "ML tools", "portfolio_items": []},
-            max_budget_usd=10.0,
-            total_cost_usd_at_dispatch=0.0,
-            capability_map=None,
-            jsearch_api_key="",
-            tavily_api_key="",
+        # Call synthesis + drafts directly (mimics HITL resume path in personas.py)
+        cs, synth_cost = await run_synthesis(
+            cs=cs,
             llm_provider="anthropic",
             llm_model="claude-sonnet-4-6",
+            current_total_cost=0.0,
+            max_budget_usd=10.0,
         )
-
-        with patch("backend.tools.tavily.TavilySearchClient.__init__", return_value=None):
-            await company_pipeline(input_payload)
+        few_shot = memory_mod.get_few_shot_examples(limit=2)
+        cs, draft_cost = await _intercepting_run_drafts(
+            cs=cs,
+            seller_profile={"company_name": "Seller", "portfolio_summary": "ML tools", "portfolio_items": []},
+            llm_provider="anthropic",
+            llm_model="claude-sonnet-4-6",
+            current_total_cost=0.0,
+            max_budget_usd=10.0,
+            few_shot_examples=few_shot,
+        )
 
     # Verify few-shot examples were injected into draft generation
     assert len(captured_few_shot) >= 1

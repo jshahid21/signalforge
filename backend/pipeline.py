@@ -1,244 +1,236 @@
 """LangGraph StateGraph assembly for SignalForge pipeline (no agent logic here).
 
-Graph structure (Phase 5):
+Graph structure:
     orchestrator
-        │  [conditional_edges → dispatch_companies → Send("company_pipeline")]
+        │
         ▼
-    company_pipeline (runs per company in parallel)
+    signal_ingestion (processes all active companies in parallel)
+        │
+        ▼
+    signal_qualification
+        │
+        ▼
+    research
+        │
+        ▼
+    solution_mapping
+        │
+        ▼
+    persona_generation (+ HITL gate marking)
+        │
+        ▼
+    hitl_gate
         │
         ▼
       END
 
-company_pipeline calls (per-company):
-    signal_ingestion → signal_qualification → research → solution_mapping
-    → persona_generation → [HITL gate: awaiting persona selection]
-    → synthesis → drafts → done
+Each stage is a separate LangGraph node so that graph.astream() emits a chunk
+at every stage boundary — enabling real-time WebSocket progress updates.
+
+Per-company parallelism within each stage is maintained via asyncio.gather().
 
 The HITL gate is a logical pause — the pipeline returns AWAITING_HUMAN status.
-Resume is triggered via the API (Phase 6) which calls apply_persona_selection()
-and re-invokes the pipeline with selected_personas populated.
+Resume is triggered via the API which calls apply_persona_selection()
+and re-invokes synthesis/drafts outside the graph.
 
 Nodes are imported from backend/agents/. This module only wires the graph.
 """
 from __future__ import annotations
 
+import asyncio
+
 from langgraph.graph import END, StateGraph
 
 from backend.agents.hitl_gate import (
-    apply_persona_selection,
     hitl_gate_node,
     run_persona_selection_gate,
 )
-from backend.agents.orchestrator import dispatch_companies, orchestrator_node
+from backend.agents.orchestrator import orchestrator_node
 from backend.agents.persona_generation import run_persona_generation
 from backend.agents.research import run_research
 from backend.agents.signal_ingestion import run_signal_ingestion
 from backend.agents.signal_qualification import run_signal_qualification
 from backend.agents.solution_mapping import run_solution_mapping
-from backend.agents.synthesis import run_synthesis
-from backend.agents.draft import run_drafts_for_company
-from backend.agents.memory_agent import get_few_shot_examples
+from backend.config.capability_map import load_capability_map
+from backend.config.loader import load_config
 from backend.models.enums import PipelineStatus
-from backend.models.state import AgentState, CompanyInput, CompanyState, SellerProfile
+from backend.models.state import AgentState
 from backend.tools.jsearch import JSearchClient
 from backend.tools.tavily import TavilySearchClient
 
 
-async def company_pipeline(input: CompanyInput) -> dict:
-    """Per-company processing node — receives CompanyInput via Send().
+# Statuses that mean a company should not be processed further
+_TERMINAL = frozenset({
+    PipelineStatus.FAILED,
+    PipelineStatus.SKIPPED,
+    PipelineStatus.COMPLETED,
+    PipelineStatus.AWAITING_HUMAN,
+})
 
-    Runs the full pipeline: ingestion → qualification → research → solution_mapping
-    → persona_generation → synthesis → drafts.
+# Maps stage node name → the current_stage value a company must have to enter
+_STAGE_ENTRY = {
+    "signal_ingestion": "init",
+    "signal_qualification": "signal_qualification",
+    "research": "research",
+    "solution_mapping": "solution_mapping",
+    "persona_generation": "persona_generation",
+}
 
-    HITL gate: if selected_personas is empty after persona generation, the pipeline
-    returns AWAITING_HUMAN. The API resumes by re-invoking with selected_personas set.
 
-    Returns updates to AgentState (merged via reducers by LangGraph).
+async def _run_stage_node(
+    state: AgentState, stage_name: str, stage_fn, **extra_kwargs
+) -> dict:
+    """Generic per-stage node: filters active companies, runs the stage, returns
+    AgentState updates.
+
+    Companies are processed in parallel via asyncio.gather(). Only companies
+    whose current_stage matches the expected entry stage are processed.
     """
-    cs: CompanyState = input["company_state"]
-    capability_map = input.get("capability_map")
-    max_budget = input.get("max_budget_usd", 0.50)
-    current_cost = input.get("total_cost_usd_at_dispatch", 0.0)
-    jsearch_key = input.get("jsearch_api_key", "")
-    tavily_key = input.get("tavily_api_key", "")
-    llm_provider = input.get("llm_provider", "")
-    llm_model = input.get("llm_model", "")
-    seller_profile: SellerProfile = input.get("seller_profile", {})  # type: ignore[assignment]
+    expected_stage = _STAGE_ENTRY[stage_name]
+    config = load_config()
 
-    jsearch_client = JSearchClient(api_key=jsearch_key)
-    tavily_client = TavilySearchClient(api_key=tavily_key)
+    active = [
+        (cid, cs)
+        for cid, cs in state.get("company_states", {}).items()
+        if cs.get("status") not in _TERMINAL
+        and cs.get("current_stage") == expected_stage
+    ]
 
+    if not active:
+        return {}
+
+    async def _process(cid, cs):
+        return cid, await stage_fn(
+            cs=cs,
+            current_total_cost=state.get("total_cost_usd", 0.0),
+            max_budget_usd=config.session_budget.max_usd,
+            llm_provider=config.api_keys.llm_provider,
+            llm_model=config.api_keys.llm_model,
+            **extra_kwargs,
+        )
+
+    results = await asyncio.gather(*[_process(cid, cs) for cid, cs in active])
+
+    updated = {}
     total_cost = 0.0
-    company_id = cs["company_id"]
+    failed_ids = []
+    completed_ids = []
+    for cid, (cs, cost) in results:
+        updated[cid] = cs
+        total_cost += cost
+        if cs["status"] == PipelineStatus.FAILED:
+            failed_ids.append(cid)
+        elif cs["status"] in (PipelineStatus.SKIPPED, PipelineStatus.COMPLETED):
+            completed_ids.append(cid)
 
-    def _failed(cs: CompanyState) -> dict:
-        return {
-            "company_states": {company_id: cs},
-            "total_cost_usd": total_cost,
-            "failed_company_ids": [company_id],
-        }
+    result: dict = {"company_states": updated, "total_cost_usd": total_cost}
+    if failed_ids:
+        result["failed_company_ids"] = failed_ids
+    if completed_ids:
+        result["completed_company_ids"] = completed_ids
+    return result
 
-    def _done(cs: CompanyState) -> dict:
-        return {
-            "company_states": {company_id: cs},
-            "total_cost_usd": total_cost,
-            "completed_company_ids": [company_id],
-        }
 
-    # Resume path: if selected_personas already populated, skip to synthesis
-    already_has_selection = bool(cs.get("selected_personas"))
-    skip_to_synthesis = (
-        already_has_selection
-        and cs.get("current_stage") in ("synthesis", "draft", "awaiting_persona_selection")
-        and cs.get("qualified_signal") is not None
-        and cs.get("solution_mapping") is not None
+# ---------------------------------------------------------------------------
+# Stage nodes — thin wrappers around agent functions
+# ---------------------------------------------------------------------------
+
+
+async def signal_ingestion_node(state: AgentState) -> dict:
+    config = load_config()
+    return await _run_stage_node(
+        state,
+        "signal_ingestion",
+        run_signal_ingestion,
+        capability_map=load_capability_map(),
+        jsearch_client=JSearchClient(api_key=config.api_keys.jsearch),
+        tavily_client=TavilySearchClient(api_key=config.api_keys.tavily),
     )
 
-    if not skip_to_synthesis:
-        # === 1. Signal Ingestion ===
-        cs, ingestion_cost = await run_signal_ingestion(
-            cs=cs,
-            capability_map=capability_map,
-            current_total_cost=current_cost,
-            max_budget_usd=max_budget,
-            jsearch_client=jsearch_client,
-            tavily_client=tavily_client,
-            llm_provider=llm_provider,
-            llm_model=llm_model,
-        )
-        total_cost += ingestion_cost
-        current_cost += ingestion_cost
-        if cs["status"] == PipelineStatus.FAILED:
-            return _failed(cs)
 
-        # === 2. Signal Qualification ===
-        cs, qual_cost = await run_signal_qualification(
-            cs=cs,
-            capability_map=capability_map,
-            llm_provider=llm_provider,
-            llm_model=llm_model,
-            current_total_cost=current_cost,
-            max_budget_usd=max_budget,
-        )
-        total_cost += qual_cost
-        current_cost += qual_cost
-        if cs["status"] == PipelineStatus.SKIPPED:
-            return _done(cs)
-        if cs["status"] == PipelineStatus.FAILED:
-            return _failed(cs)
-
-        # === 3. Research ===
-        cs, research_cost = await run_research(
-            cs=cs,
-            llm_provider=llm_provider,
-            llm_model=llm_model,
-            current_total_cost=current_cost,
-            max_budget_usd=max_budget,
-        )
-        total_cost += research_cost
-        current_cost += research_cost
-        if cs["status"] == PipelineStatus.FAILED:
-            return _failed(cs)
-
-        # === 4. Solution Mapping ===
-        cs, mapping_cost = await run_solution_mapping(
-            cs=cs,
-            capability_map=capability_map,
-            llm_provider=llm_provider,
-            llm_model=llm_model,
-            current_total_cost=current_cost,
-            max_budget_usd=max_budget,
-        )
-        total_cost += mapping_cost
-        current_cost += mapping_cost
-        if cs["status"] == PipelineStatus.FAILED:
-            return _failed(cs)
-
-        # === 5. Persona Generation ===
-        cs, persona_cost = await run_persona_generation(
-            cs=cs,
-            llm_provider=llm_provider,
-            llm_model=llm_model,
-            current_total_cost=current_cost,
-            max_budget_usd=max_budget,
-        )
-        total_cost += persona_cost
-        current_cost += persona_cost
-
-        # === 6. HITL Gate — Persona Selection ===
-        if not cs.get("selected_personas"):
-            # No personas selected yet — pause for human input
-            cs = run_persona_selection_gate(cs)
-            return {
-                "company_states": {company_id: cs},
-                "total_cost_usd": total_cost,
-                "awaiting_persona_selection": True,
-                "awaiting_review": [company_id],
-            }
-
-    # === 7. Synthesis ===
-    cs, synth_cost = await run_synthesis(
-        cs=cs,
-        llm_provider=llm_provider,
-        llm_model=llm_model,
-        current_total_cost=current_cost,
-        max_budget_usd=max_budget,
+async def signal_qualification_node(state: AgentState) -> dict:
+    return await _run_stage_node(
+        state,
+        "signal_qualification",
+        run_signal_qualification,
+        capability_map=load_capability_map(),
     )
-    total_cost += synth_cost
-    current_cost += synth_cost
-    if cs["status"] == PipelineStatus.FAILED:
-        return _failed(cs)
 
-    # === 8. Draft Generation ===
-    few_shot = get_few_shot_examples(limit=2)
-    cs, draft_cost = await run_drafts_for_company(
-        cs=cs,
-        seller_profile=seller_profile,
-        llm_provider=llm_provider,
-        llm_model=llm_model,
-        current_total_cost=current_cost,
-        max_budget_usd=max_budget,
-        few_shot_examples=few_shot,
+
+async def research_node(state: AgentState) -> dict:
+    return await _run_stage_node(state, "research", run_research)
+
+
+async def solution_mapping_node(state: AgentState) -> dict:
+    return await _run_stage_node(
+        state,
+        "solution_mapping",
+        run_solution_mapping,
+        capability_map=load_capability_map(),
     )
-    total_cost += draft_cost
 
-    return _done(cs)
+
+async def persona_generation_node(state: AgentState) -> dict:
+    """Run persona generation then apply HITL gate for companies needing selection."""
+    result = await _run_stage_node(state, "persona_generation", run_persona_generation)
+
+    # Apply HITL gate: mark companies without selected_personas as awaiting
+    awaiting_ids = []
+    for cid, cs in result.get("company_states", {}).items():
+        if cs.get("status") not in _TERMINAL and not cs.get("selected_personas"):
+            result["company_states"][cid] = run_persona_selection_gate(cs)
+            awaiting_ids.append(cid)
+
+    if awaiting_ids:
+        result["awaiting_persona_selection"] = True
+        result["awaiting_review"] = awaiting_ids
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Graph assembly
+# ---------------------------------------------------------------------------
 
 
 def build_pipeline(checkpointer=None):
     """Assemble and compile the LangGraph StateGraph.
 
     Graph topology:
-        orchestrator → [dispatch_companies → Send("company_pipeline")] → hitl_gate → END
+        orchestrator → signal_ingestion → signal_qualification → research
+        → solution_mapping → persona_generation → hitl_gate → END
 
-    The hitl_gate node is a pure signalling node: it detects companies awaiting
-    persona selection and returns the awaiting flag so the caller can exit the
-    graph and notify the UI. The graph does NOT call `interrupt()` — LangGraph
-    checkpointers cannot serialize the Send objects used on resume, so HITL
-    resume happens out of graph via `/sessions/.../personas/confirm`, which
-    drives `run_synthesis` + `run_drafts_for_company` directly.
+    Each stage is a separate node so graph.astream() emits a chunk at every
+    stage boundary, enabling real-time WebSocket progress updates.
+
+    Per-company parallelism is maintained within each node via asyncio.gather().
+
+    The hitl_gate node detects companies awaiting persona selection and returns
+    the awaiting flag so the caller can notify the UI. Resume happens outside
+    LangGraph via the /sessions/.../personas/confirm endpoint, which drives
+    run_synthesis + run_drafts_for_company directly.
 
     Args:
-        checkpointer: LangGraph checkpointer. Optional; `None` is fine for the
-                      normal run, since the run completes before exiting the
-                      graph and HITL resume does not re-enter the graph.
-                      Historically this slot held `AsyncSqliteSaver` for
-                      cross-restart resume — that feature has been removed.
+        checkpointer: LangGraph checkpointer. Optional; None is fine for the
+                      normal run since HITL resume does not re-enter the graph.
     """
     graph = StateGraph(AgentState)
 
     graph.add_node("orchestrator", orchestrator_node)
-    graph.add_node("company_pipeline", company_pipeline)
+    graph.add_node("signal_ingestion", signal_ingestion_node)
+    graph.add_node("signal_qualification", signal_qualification_node)
+    graph.add_node("research", research_node)
+    graph.add_node("solution_mapping", solution_mapping_node)
+    graph.add_node("persona_generation", persona_generation_node)
     graph.add_node("hitl_gate", hitl_gate_node)
 
-    graph.add_conditional_edges(
-        "orchestrator",
-        dispatch_companies,
-        ["company_pipeline"],
-    )
-
-    graph.add_edge("company_pipeline", "hitl_gate")
-    graph.add_edge("hitl_gate", END)
     graph.set_entry_point("orchestrator")
+    graph.add_edge("orchestrator", "signal_ingestion")
+    graph.add_edge("signal_ingestion", "signal_qualification")
+    graph.add_edge("signal_qualification", "research")
+    graph.add_edge("research", "solution_mapping")
+    graph.add_edge("solution_mapping", "persona_generation")
+    graph.add_edge("persona_generation", "hitl_gate")
+    graph.add_edge("hitl_gate", END)
 
     return graph.compile(checkpointer=checkpointer)
