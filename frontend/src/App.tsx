@@ -132,6 +132,46 @@ export default function App() {
     void init()
   }, [])
 
+  // ── Fallback polling when WebSocket is disconnected ─────────────────
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  useEffect(() => {
+    // Poll session status every 5s when WS is disconnected and session is active
+    function startPolling() {
+      if (pollRef.current) return
+      pollRef.current = setInterval(async () => {
+        if (!currentSession) return
+        const isTerminal = ['completed', 'failed', 'partial'].includes(currentSession.status)
+        if (wsManager.connected || isTerminal) {
+          // WS reconnected or session finished — stop polling
+          if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null }
+          return
+        }
+        try {
+          const full = await sessionsApi.get(currentSession.session_id)
+          setCurrentSession(full)
+          sessionsApi.list().then(setSessions).catch(() => {})
+        } catch {
+          // Backend unreachable — keep polling
+        }
+      }, 5_000)
+    }
+
+    // Check connection state periodically to decide whether to poll
+    const checkInterval = setInterval(() => {
+      if (!currentSession) return
+      const isTerminal = ['completed', 'failed', 'partial'].includes(currentSession.status)
+      if (!wsManager.connected && !isTerminal) {
+        startPolling()
+      }
+    }, 2_000)
+
+    return () => {
+      clearInterval(checkInterval)
+      if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null }
+    }
+  }, [currentSession?.session_id, currentSession?.status])
+
   // ── WebSocket ──────────────────────────────────────────────────────────
   // Track unsubscribe callback to avoid handler accumulation across session switches
   const wsUnsubRef = useRef<(() => void) | null>(null)
@@ -217,6 +257,12 @@ export default function App() {
 
   // ── HITL ───────────────────────────────────────────────────────────────
   const isHitlMode = !!(currentSession?.awaiting_persona_selection)
+  const companiesAwaitingConfirmation = isHitlMode
+    ? companies.filter(c => c.current_stage === 'awaiting_persona_selection')
+    : []
+  const companiesConfirmed = isHitlMode
+    ? companies.filter(c => c.current_stage !== 'awaiting_persona_selection' && c.generated_personas.length > 0)
+    : []
 
   async function handleConfirmPersonas(selectedIds: string[], customPersonas: typeof personas) {
     if (!currentSession || !selectedCompanyId) return
@@ -312,6 +358,16 @@ export default function App() {
           <div className="flex flex-1 overflow-hidden">
             {/* Company table - left 1/3 */}
             <div className="w-1/3 border-r border-gray-200 overflow-hidden flex flex-col">
+              {isHitlMode && companiesAwaitingConfirmation.length > 0 && (
+                <div className="px-3 py-2 bg-yellow-50 border-b border-yellow-200 text-sm text-yellow-800">
+                  <p className="font-medium">
+                    {companiesConfirmed.length}/{companiesConfirmed.length + companiesAwaitingConfirmation.length} companies confirmed
+                  </p>
+                  <p className="text-xs text-yellow-700 mt-0.5">
+                    Awaiting: {companiesAwaitingConfirmation.map(c => c.company_name).join(', ')}
+                  </p>
+                </div>
+              )}
               <CompanyTable
                 companies={companies}
                 selectedCompanyId={selectedCompanyId}
