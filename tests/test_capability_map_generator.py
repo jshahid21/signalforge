@@ -12,32 +12,32 @@ from backend.capability_map_generator import (
     _parse_generation_response,
     generate_capability_map,
 )
-from backend.tools.web_crawler import _strip_html_tags
+from backend.tools.web_crawler import strip_html_tags
 
 
 class TestStripHtmlTags:
     def test_removes_basic_tags(self) -> None:
-        result = _strip_html_tags("<p>Hello <b>world</b></p>")
+        result = strip_html_tags("<p>Hello <b>world</b></p>")
         assert "<" not in result
         assert "Hello" in result
         assert "world" in result
 
     def test_removes_script_tags(self) -> None:
-        result = _strip_html_tags("<script>alert('xss')</script><p>Content</p>")
+        result = strip_html_tags("<script>alert('xss')</script><p>Content</p>")
         assert "alert" not in result
         assert "Content" in result
 
     def test_removes_style_tags(self) -> None:
-        result = _strip_html_tags("<style>.foo { color: red }</style><p>Text</p>")
+        result = strip_html_tags("<style>.foo { color: red }</style><p>Text</p>")
         assert "color" not in result
         assert "Text" in result
 
     def test_collapses_whitespace(self) -> None:
-        result = _strip_html_tags("<p>Hello   World</p>")
+        result = strip_html_tags("<p>Hello   World</p>")
         assert "Hello World" in result
 
     def test_handles_empty_string(self) -> None:
-        assert _strip_html_tags("") == ""
+        assert strip_html_tags("") == ""
 
 
 class TestParseGenerationResponse:

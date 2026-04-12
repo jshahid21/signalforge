@@ -12,7 +12,7 @@ from __future__ import annotations
 import operator
 from typing import Annotated, Dict, List, Literal, Optional
 
-from typing_extensions import TypedDict
+from typing_extensions import NotRequired, TypedDict
 
 from backend.models.enums import HumanReviewReason, PipelineStatus, SignalTier
 
@@ -120,10 +120,30 @@ class CompanyError(TypedDict):
     recoverable: bool
 
 
+class SalesPlayDict(TypedDict):
+    play: str
+    category: str
+
+
+class ProofPointDict(TypedDict):
+    customer: str
+    summary: str
+
+
+class SellerIntelligenceDict(TypedDict, total=False):
+    differentiators: List[str]
+    sales_plays: List[SalesPlayDict]
+    proof_points: List[ProofPointDict]
+    competitive_positioning: List[str]
+    last_scraped: Optional[str]
+
+
 class SellerProfile(TypedDict):
     company_name: str
     portfolio_summary: str
     portfolio_items: List[str]
+    website_url: NotRequired[Optional[str]]
+    seller_intelligence: NotRequired[SellerIntelligenceDict]
 
 
 # ---------------------------------------------------------------------------

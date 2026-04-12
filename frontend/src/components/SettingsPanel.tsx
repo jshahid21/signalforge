@@ -17,28 +17,62 @@ const TABS: { id: Tab; label: string }[] = [
 
 // ── Seller Profile Tab ─────────────────────────────────────────────────────
 
+interface SalesPlay { play: string; category: string }
+interface ProofPoint { customer: string; summary: string }
+interface SellerIntelligenceData {
+  differentiators: string[]
+  sales_plays: SalesPlay[]
+  proof_points: ProofPoint[]
+  competitive_positioning: string[]
+  last_scraped: string | null
+}
+
 function SellerProfileTab() {
   const [companyName, setCompanyName] = useState('')
   const [portfolioSummary, setPortfolioSummary] = useState('')
   const [portfolioItems, setPortfolioItems] = useState('')
+  const [websiteUrl, setWebsiteUrl] = useState('')
+  const [intelligence, setIntelligence] = useState<SellerIntelligenceData | null>(null)
   const [saved, setSaved] = useState(false)
+  const [extracting, setExtracting] = useState(false)
+  const [extractError, setExtractError] = useState<string | null>(null)
 
   useEffect(() => {
     settingsApi.getSellerProfile().then((d: Record<string, unknown>) => {
       setCompanyName(d.company_name as string ?? '')
       setPortfolioSummary(d.portfolio_summary as string ?? '')
       setPortfolioItems(((d.portfolio_items as string[]) ?? []).join('\n'))
+      setWebsiteUrl(d.website_url as string ?? '')
+      if (d.seller_intelligence) setIntelligence(d.seller_intelligence as SellerIntelligenceData)
     }).catch(() => {})
   }, [])
 
   async function save() {
+    const url = websiteUrl.trim()
+    if (url && !url.startsWith('https://')) return
     await settingsApi.putSellerProfile({
       company_name: companyName,
       portfolio_summary: portfolioSummary,
       portfolio_items: portfolioItems.split('\n').map(s => s.trim()).filter(Boolean),
+      ...(url ? { website_url: url } : {}),
+      ...(intelligence ? { seller_intelligence: intelligence } : {}),
     })
     setSaved(true)
     setTimeout(() => setSaved(false), 2000)
+  }
+
+  async function rescrape() {
+    const url = websiteUrl.trim()
+    if (!url) return
+    setExtracting(true); setExtractError(null)
+    try {
+      const result = await settingsApi.extractSellerIntelligence({ website_url: url })
+      setIntelligence(result.seller_intelligence as SellerIntelligenceData)
+    } catch (e) {
+      setExtractError(String(e))
+    } finally {
+      setExtracting(false)
+    }
   }
 
   return (
@@ -58,6 +92,93 @@ function SellerProfileTab() {
         <textarea value={portfolioItems} onChange={e => setPortfolioItems(e.target.value)} rows={4}
           className="mt-1 w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
       </div>
+      <div>
+        <label className="block text-sm font-medium text-gray-700">Website URL</label>
+        <div className="flex gap-2 mt-1">
+          <input value={websiteUrl} onChange={e => setWebsiteUrl(e.target.value)}
+            placeholder="https://www.yourcompany.com"
+            className="flex-1 rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+          <button onClick={() => void rescrape()}
+            disabled={extracting || !websiteUrl.trim() || !websiteUrl.trim().startsWith('https://')}
+            className="rounded-md bg-gray-100 border border-gray-300 px-3 py-2 text-sm text-gray-700 hover:bg-gray-200 disabled:opacity-50">
+            {extracting ? 'Extracting...' : 'Re-scrape'}
+          </button>
+        </div>
+        {extractError && <p className="mt-1 text-xs text-red-500">{extractError}</p>}
+      </div>
+
+      {/* Seller Intelligence Section */}
+      {intelligence && (
+        <div className="border border-gray-200 rounded-md p-4 space-y-3">
+          <div className="flex items-center justify-between">
+            <h3 className="text-sm font-semibold text-gray-800">Seller Intelligence</h3>
+            {intelligence.last_scraped && (
+              <span className="text-xs text-gray-400">
+                Last scraped: {new Date(intelligence.last_scraped).toLocaleDateString()}
+              </span>
+            )}
+          </div>
+
+          {intelligence.differentiators?.length > 0 && (
+            <div>
+              <label className="block text-xs font-medium text-gray-500 mb-1">Differentiators</label>
+              <textarea
+                value={intelligence.differentiators.join('\n')}
+                onChange={e => setIntelligence({ ...intelligence, differentiators: e.target.value.split('\n').filter(Boolean) })}
+                rows={Math.min(intelligence.differentiators.length + 1, 5)}
+                className="w-full rounded border border-gray-200 px-2 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500" />
+            </div>
+          )}
+
+          {intelligence.sales_plays?.length > 0 && (
+            <div>
+              <label className="block text-xs font-medium text-gray-500 mb-1">Sales Plays</label>
+              {intelligence.sales_plays.map((sp, i) => (
+                <div key={i} className="flex gap-2 mb-1">
+                  <input value={sp.play}
+                    onChange={e => { const plays = [...intelligence.sales_plays]; plays[i] = { ...sp, play: e.target.value }; setIntelligence({ ...intelligence, sales_plays: plays }) }}
+                    className="flex-1 rounded border border-gray-200 px-2 py-1 text-sm" placeholder="Play" />
+                  <input value={sp.category}
+                    onChange={e => { const plays = [...intelligence.sales_plays]; plays[i] = { ...sp, category: e.target.value }; setIntelligence({ ...intelligence, sales_plays: plays }) }}
+                    className="w-40 rounded border border-gray-200 px-2 py-1 text-sm" placeholder="Category" />
+                </div>
+              ))}
+            </div>
+          )}
+
+          {intelligence.proof_points?.length > 0 && (
+            <div>
+              <label className="block text-xs font-medium text-gray-500 mb-1">Proof Points</label>
+              {intelligence.proof_points.map((pp, i) => (
+                <div key={i} className="flex gap-2 mb-1">
+                  <input value={pp.customer}
+                    onChange={e => { const pts = [...intelligence.proof_points]; pts[i] = { ...pp, customer: e.target.value }; setIntelligence({ ...intelligence, proof_points: pts }) }}
+                    className="w-32 rounded border border-gray-200 px-2 py-1 text-sm" placeholder="Customer" />
+                  <input value={pp.summary}
+                    onChange={e => { const pts = [...intelligence.proof_points]; pts[i] = { ...pp, summary: e.target.value }; setIntelligence({ ...intelligence, proof_points: pts }) }}
+                    className="flex-1 rounded border border-gray-200 px-2 py-1 text-sm" placeholder="Summary" />
+                </div>
+              ))}
+            </div>
+          )}
+
+          {intelligence.competitive_positioning?.length > 0 && (
+            <div>
+              <label className="block text-xs font-medium text-gray-500 mb-1">Competitive Positioning</label>
+              <textarea
+                value={intelligence.competitive_positioning.join('\n')}
+                onChange={e => setIntelligence({ ...intelligence, competitive_positioning: e.target.value.split('\n').filter(Boolean) })}
+                rows={Math.min(intelligence.competitive_positioning.length + 1, 4)}
+                className="w-full rounded border border-gray-200 px-2 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500" />
+            </div>
+          )}
+
+          {!intelligence.differentiators?.length && !intelligence.sales_plays?.length && !intelligence.proof_points?.length && !intelligence.competitive_positioning?.length && (
+            <p className="text-sm text-gray-400">No intelligence extracted yet. Enter a website URL above and click Re-scrape.</p>
+          )}
+        </div>
+      )}
+
       <button onClick={() => void save()}
         className="rounded-md bg-blue-600 px-4 py-2 text-sm text-white hover:bg-blue-700">
         {saved ? 'Saved!' : 'Save'}

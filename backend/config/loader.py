@@ -23,10 +23,30 @@ from typing import Optional
 from pydantic import BaseModel, Field
 
 
+class SalesPlay(BaseModel):
+    play: str
+    category: str
+
+
+class ProofPoint(BaseModel):
+    customer: str
+    summary: str
+
+
+class SellerIntelligence(BaseModel):
+    differentiators: list[str] = Field(default_factory=list)
+    sales_plays: list[SalesPlay] = Field(default_factory=list)
+    proof_points: list[ProofPoint] = Field(default_factory=list)
+    competitive_positioning: list[str] = Field(default_factory=list)
+    last_scraped: Optional[str] = None
+
+
 class SellerProfileConfig(BaseModel):
     company_name: str = ""
     portfolio_summary: str = ""
     portfolio_items: list[str] = Field(default_factory=list)
+    website_url: Optional[str] = None
+    seller_intelligence: SellerIntelligence = Field(default_factory=SellerIntelligence)
 
 
 class ApiKeysConfig(BaseModel):

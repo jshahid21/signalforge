@@ -212,16 +212,24 @@ async def create_session(
     """
     config = load_config()
 
-    # Resolve seller profile
-    seller_profile_raw = body.seller_profile or {
-        "company_name": config.seller_profile.company_name,
-        "portfolio_summary": config.seller_profile.portfolio_summary,
-        "portfolio_items": config.seller_profile.portfolio_items,
-    }
+    # Resolve seller profile (include seller intelligence for draft enrichment)
+    if body.seller_profile:
+        seller_profile_raw = body.seller_profile
+    else:
+        sp = config.seller_profile
+        seller_profile_raw = {
+            "company_name": sp.company_name,
+            "portfolio_summary": sp.portfolio_summary,
+            "portfolio_items": sp.portfolio_items,
+            **({"website_url": sp.website_url} if sp.website_url else {}),
+            **({"seller_intelligence": sp.seller_intelligence.model_dump()} if sp.seller_intelligence and sp.seller_intelligence.differentiators else {}),
+        }
     seller_profile = SellerProfile(
         company_name=seller_profile_raw.get("company_name", ""),
         portfolio_summary=seller_profile_raw.get("portfolio_summary", ""),
         portfolio_items=seller_profile_raw.get("portfolio_items", []),
+        **({"website_url": seller_profile_raw["website_url"]} if "website_url" in seller_profile_raw else {}),
+        **({"seller_intelligence": seller_profile_raw["seller_intelligence"]} if "seller_intelligence" in seller_profile_raw else {}),
     )
 
     session_id = generate_session_id()
