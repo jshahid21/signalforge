@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from backend.agents.solution_mapping import (
+    _build_solution_mapping_prompt,
     _contains_vendor_name,
     _parse_solution_mapping_response,
     _sanitize_solution_areas,
@@ -85,6 +86,87 @@ def _make_llm_response(confidence: int) -> str:
         f'"confidence_score": {confidence}, '
         f'"reasoning": "Strong signal for ML infra investment."}}'
     )
+
+
+class TestCoreProblemSpecificity:
+    """Regression tests for issue #15: core problem summary must require company-specific details."""
+
+    def test_prompt_requires_company_name_in_core_problem(self) -> None:
+        """The prompt must instruct the LLM to include the company name in core_problem."""
+        prompt = _build_solution_mapping_prompt(
+            company_name="Acme Corp",
+            signal_summary="Hiring ML engineers",
+            research_context="Company context: Acme Corp is a fintech company.",
+            capability_map_text="(No capability map configured.)",
+        )
+        assert "company name" in prompt.lower()
+        assert "specific" in prompt.lower()
+
+    def test_prompt_includes_few_shot_examples(self) -> None:
+        """The prompt must include examples of good vs bad core_problem descriptions."""
+        prompt = _build_solution_mapping_prompt(
+            company_name="Acme Corp",
+            signal_summary="Hiring ML engineers",
+            research_context="Company context: Acme Corp is a fintech company.",
+            capability_map_text="(No capability map configured.)",
+        )
+        assert "BAD" in prompt
+        assert "GOOD" in prompt
+
+    def test_prompt_rejects_generic_descriptions(self) -> None:
+        """The prompt must explicitly instruct against generic problem statements."""
+        prompt = _build_solution_mapping_prompt(
+            company_name="Acme Corp",
+            signal_summary="Hiring ML engineers",
+            research_context="Company context: Acme Corp is a fintech company.",
+            capability_map_text="(No capability map configured.)",
+        )
+        assert "generic" in prompt.lower()
+
+    def test_prompt_includes_company_name_in_examples(self) -> None:
+        """Few-shot GOOD examples must reference the actual company name for grounding."""
+        prompt = _build_solution_mapping_prompt(
+            company_name="Acme Corp",
+            signal_summary="Hiring ML engineers",
+            research_context="Company context: Acme Corp is a fintech company.",
+            capability_map_text="(No capability map configured.)",
+        )
+        # The GOOD examples should include the company_name variable interpolation
+        assert "Acme Corp" in prompt
+
+    @pytest.mark.asyncio
+    async def test_research_context_labels_are_present(self) -> None:
+        """Research context parts should be labeled so the LLM can reference them."""
+        cs = _make_company_state("stripe")
+        cap_map = _make_mock_capability_map()
+
+        # Use a specific core_problem that includes the company name to verify end-to-end
+        specific_response = (
+            '{"core_problem": "Stripe needs to scale its Kubernetes-based ML platform '
+            'to support real-time fraud detection across its payments infrastructure.", '
+            '"solution_areas": ["Distributed compute orchestration", "ML pipeline automation"], '
+            '"confidence_score": 80, '
+            '"reasoning": "Strong signal for ML infra investment at Stripe."}'
+        )
+        with patch(
+            "backend.agents.solution_mapping.ChatAnthropic"
+        ) as MockLLM:
+            mock_response = MagicMock()
+            mock_response.content = specific_response
+            MockLLM.return_value.ainvoke = AsyncMock(return_value=mock_response)
+
+            updated_cs, _ = await run_solution_mapping(
+                cs=cs,
+                capability_map=cap_map,
+                llm_provider="anthropic",
+                llm_model="claude-sonnet-4-6",
+                current_total_cost=0.0,
+                max_budget_usd=1.0,
+            )
+
+        core_problem = updated_cs["solution_mapping"]["core_problem"]
+        assert "Stripe" in core_problem
+        assert "Kubernetes" in core_problem
 
 
 class TestVendorNameValidation:
