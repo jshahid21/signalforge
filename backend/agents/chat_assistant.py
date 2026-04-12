@@ -19,6 +19,7 @@ from __future__ import annotations
 from typing import AsyncGenerator
 
 from backend.models.state import CompanyState
+from backend.tracing import traceable
 
 
 def _build_context_block(cs: CompanyState, active_persona_id: str | None = None) -> str:
@@ -81,6 +82,7 @@ You CANNOT: trigger pipeline re-runs, fetch new data, or make decisions that req
 Keep responses concise and grounded in the provided context."""
 
 
+@traceable(name="stream_chat_response")
 async def stream_chat_response(
     cs: CompanyState,
     user_message: str,

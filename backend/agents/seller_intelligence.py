@@ -24,6 +24,7 @@ from backend.config.loader import (
     load_config,
     save_config,
 )
+from backend.tracing import traceable
 from backend.tools.web_crawler import (
     strip_html_tags,
     crawl_url,
@@ -166,6 +167,7 @@ def _parse_extraction_response(text: str) -> SellerIntelligence | None:
         return None
 
 
+@traceable(name="extract_seller_intelligence")
 async def extract_seller_intelligence(
     website_url: str,
     llm_provider: str,

@@ -20,6 +20,7 @@ import asyncio
 from typing import Any
 
 from backend.config.capability_map import CapabilityMap
+from backend.tracing import traceable
 from backend.models.enums import PipelineStatus, SignalTier
 from backend.models.state import (
     CompanyError,
@@ -245,6 +246,7 @@ def _has_enterprise_indicators(signals: list[RawSignal]) -> bool:
     return any(term in combined for term in enterprise_terms)
 
 
+@traceable(name="run_signal_ingestion")
 async def run_signal_ingestion(
     cs: CompanyState,
     capability_map: CapabilityMap | None,

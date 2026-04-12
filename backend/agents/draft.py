@@ -26,6 +26,7 @@ import uuid
 from typing import Optional
 
 from backend.models.enums import HumanReviewReason, PipelineStatus
+from backend.tracing import traceable
 from backend.models.state import (
     CompanyError,
     CompanyState,
@@ -381,6 +382,7 @@ async def run_draft(
     return draft, cost_incurred
 
 
+@traceable(name="run_drafts_for_company")
 async def run_drafts_for_company(
     cs: CompanyState,
     seller_profile: Optional[SellerProfile],

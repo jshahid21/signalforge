@@ -26,6 +26,7 @@ logger = logging.getLogger(__name__)
 from langchain_core.messages import HumanMessage
 
 from backend.config.capability_map import CapabilityMap
+from backend.tracing import traceable
 from backend.models.enums import HumanReviewReason, PipelineStatus, SignalTier
 from backend.models.state import CompanyState, CostMetadata, QualifiedSignal, RawSignal
 
@@ -201,6 +202,7 @@ def get_all_keywords_matched(
     return [kw for kw in capability_map.all_keywords() if kw.lower() in combined]
 
 
+@traceable(name="run_signal_qualification")
 async def run_signal_qualification(
     cs: CompanyState,
     capability_map: CapabilityMap | None,

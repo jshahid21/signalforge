@@ -20,6 +20,7 @@ import uuid
 from typing import Literal
 
 from backend.models.enums import HumanReviewReason
+from backend.tracing import traceable
 from backend.models.state import CompanyState, Persona, ResearchResult, SolutionMappingOutput
 
 _LLM_COST = 0.003
@@ -478,6 +479,7 @@ def _compute_outreach_sequence(personas: list[Persona], category: str) -> list[s
     return result
 
 
+@traceable(name="run_persona_generation")
 async def run_persona_generation(
     cs: CompanyState,
     llm_provider: str,

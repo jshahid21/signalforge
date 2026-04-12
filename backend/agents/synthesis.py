@@ -12,6 +12,7 @@ import asyncio
 import json
 
 from backend.models.enums import PipelineStatus
+from backend.tracing import traceable
 from backend.models.state import (
     CompanyError,
     CompanyState,
@@ -168,6 +169,7 @@ async def _synthesize_for_persona(
     return _make_fallback_synthesis(company_name, core_problem, persona["title"])
 
 
+@traceable(name="run_synthesis")
 async def run_synthesis(
     cs: CompanyState,
     llm_provider: str,

@@ -13,6 +13,7 @@ import asyncio
 import json
 
 from backend.models.enums import PipelineStatus
+from backend.tracing import traceable
 from backend.models.state import CompanyError, CompanyState, ResearchResult
 
 # Approximate USD cost per LLM call (3 sub-tasks total)
@@ -116,6 +117,7 @@ investment priorities and growth areas. Focus on patterns, not individual roles.
         return None
 
 
+@traceable(name="run_research")
 async def run_research(
     cs: CompanyState,
     llm_provider: str,

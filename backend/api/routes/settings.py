@@ -10,6 +10,7 @@ from backend.config.loader import (
     SalesPlay,
     ProofPoint,
     SellerIntelligence,
+    apply_langsmith_env,
     load_config,
     save_config,
 )
@@ -154,6 +155,40 @@ async def update_session_budget(body: SessionBudgetBody) -> dict:
     config.session_budget.tier3_limit = body.tier3_limit
     save_config(config)
     return {"status": "saved", "session_budget": config.session_budget.model_dump()}
+
+
+# ---------------------------------------------------------------------------
+# LangSmith Tracing
+# ---------------------------------------------------------------------------
+
+
+class LangSmithBody(BaseModel):
+    enabled: bool = False
+    api_key: str = ""
+    project: str = "signalforge"
+
+
+@router.get("/langsmith")
+async def get_langsmith() -> dict:
+    config = load_config()
+    data = config.langsmith.model_dump()
+    # Mask API key
+    if data.get("api_key"):
+        data["api_key"] = "***" + data["api_key"][-4:] if len(data["api_key"]) > 4 else "***"
+    return data
+
+
+@router.put("/langsmith")
+async def update_langsmith(body: LangSmithBody) -> dict:
+    config = load_config()
+    config.langsmith.enabled = body.enabled
+    if body.api_key and not body.api_key.startswith("***"):
+        config.langsmith.api_key = body.api_key
+    if body.project:
+        config.langsmith.project = body.project
+    save_config(config)
+    apply_langsmith_env(config)
+    return {"status": "saved"}
 
 
 # ---------------------------------------------------------------------------
