@@ -235,6 +235,7 @@ class TestCompanyState:
             "qualified_signal": None,
             "signal_qualified": False,
             "research_result": None,
+            "industry": None,
             "solution_mapping": None,
             "generated_personas": [],
             "selected_personas": [],
@@ -251,6 +252,7 @@ class TestCompanyState:
         }
         assert cs["company_id"] == "stripe"
         assert cs["qualified_signal"] is None
+        assert cs["industry"] is None
         assert cs["generated_personas"] == []
         assert cs["drafts"] == {}
 
