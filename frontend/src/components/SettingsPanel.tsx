@@ -5,12 +5,13 @@ import { useEffect, useState } from 'react'
 import type { CapabilityMapEntry } from '../api/client'
 import { memoryApi, settingsApi } from '../api/client'
 
-type Tab = 'seller-profile' | 'api-keys' | 'session-budget' | 'memory' | 'capability-map'
+type Tab = 'seller-profile' | 'api-keys' | 'session-budget' | 'langsmith' | 'memory' | 'capability-map'
 
 const TABS: { id: Tab; label: string }[] = [
   { id: 'seller-profile', label: 'Seller Profile' },
   { id: 'api-keys', label: 'API Keys' },
   { id: 'session-budget', label: 'Budget' },
+  { id: 'langsmith', label: 'LangSmith' },
   { id: 'memory', label: 'Memory' },
   { id: 'capability-map', label: 'Capability Map' },
 ]
@@ -272,6 +273,64 @@ function SessionBudgetTab() {
   )
 }
 
+// ── LangSmith Tab ─────────────────────────────────────────────────────────
+
+function LangSmithTab() {
+  const [enabled, setEnabled] = useState(false)
+  const [apiKey, setApiKey] = useState('')
+  const [project, setProject] = useState('signalforge')
+  const [saved, setSaved] = useState(false)
+
+  useEffect(() => {
+    settingsApi.getLangsmith().then((d: Record<string, unknown>) => {
+      setEnabled(d.enabled as boolean ?? false)
+      setProject(d.project as string ?? 'signalforge')
+      // api_key comes back masked; leave field empty so user can type a new one
+    }).catch(() => {})
+  }, [])
+
+  async function save() {
+    await settingsApi.putLangsmith({ enabled, api_key: apiKey, project })
+    setSaved(true)
+    setTimeout(() => setSaved(false), 2000)
+  }
+
+  return (
+    <div className="space-y-4">
+      <p className="text-sm text-gray-500">
+        Enable LangSmith tracing to send all LLM calls and pipeline runs to{' '}
+        <a href="https://smith.langchain.com" target="_blank" rel="noreferrer"
+          className="text-blue-600 hover:underline">smith.langchain.com</a>.
+        Free tier available.
+      </p>
+      <div className="flex items-center gap-3">
+        <label className="relative inline-flex cursor-pointer items-center">
+          <input type="checkbox" checked={enabled} onChange={e => setEnabled(e.target.checked)}
+            className="peer sr-only" />
+          <div className="h-6 w-11 rounded-full bg-gray-200 after:absolute after:left-[2px] after:top-[2px] after:h-5 after:w-5 after:rounded-full after:border after:border-gray-300 after:bg-white after:transition-all peer-checked:bg-blue-600 peer-checked:after:translate-x-full peer-checked:after:border-white" />
+        </label>
+        <span className="text-sm font-medium text-gray-700">{enabled ? 'Enabled' : 'Disabled'}</span>
+      </div>
+      <div>
+        <label className="block text-sm font-medium text-gray-700">LangSmith API Key</label>
+        <input type="password" value={apiKey} onChange={e => setApiKey(e.target.value)}
+          placeholder="lsv2_pt_••••••••"
+          className="mt-1 w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+      </div>
+      <div>
+        <label className="block text-sm font-medium text-gray-700">Project Name</label>
+        <input value={project} onChange={e => setProject(e.target.value)}
+          placeholder="signalforge"
+          className="mt-1 w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+      </div>
+      <button onClick={() => void save()}
+        className="rounded-md bg-blue-600 px-4 py-2 text-sm text-white hover:bg-blue-700">
+        {saved ? 'Saved!' : 'Save'}
+      </button>
+    </div>
+  )
+}
+
 // ── Memory Tab ─────────────────────────────────────────────────────────────
 
 function MemoryTab() {
@@ -480,6 +539,7 @@ export function SettingsPanel({ onClose }: Props) {
           {activeTab === 'seller-profile' && <SellerProfileTab />}
           {activeTab === 'api-keys' && <ApiKeysTab />}
           {activeTab === 'session-budget' && <SessionBudgetTab />}
+          {activeTab === 'langsmith' && <LangSmithTab />}
           {activeTab === 'memory' && <MemoryTab />}
           {activeTab === 'capability-map' && <CapabilityMapTab />}
         </div>

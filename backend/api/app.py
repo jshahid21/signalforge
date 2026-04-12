@@ -18,9 +18,12 @@ from backend.api.routes import (
     settings,
 )
 from backend.api.websocket import manager
-from backend.config.loader import is_first_run, load_config, save_config
+from backend.config.loader import apply_langsmith_env, is_first_run, load_config, save_config
 
 app = FastAPI(title="SignalForge API", version="0.1.0")
+
+# Apply LangSmith env vars from persisted config on startup
+apply_langsmith_env()
 
 # CORS — allow frontend dev server (Vite :5173) and any other configured origin
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402

@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 
 from backend.config.capability_map import CapabilityMap
+from backend.tracing import traceable
 from backend.models.enums import HumanReviewReason
 from backend.models.state import CompanyState, QualifiedSignal, ResearchResult, SolutionMappingOutput
 
@@ -141,6 +142,7 @@ def _sanitize_solution_areas(areas: list) -> list[str]:
     return [str(a) for a in areas if isinstance(a, str) and not _contains_vendor_name(a)]
 
 
+@traceable(name="run_solution_mapping")
 async def run_solution_mapping(
     cs: CompanyState,
     capability_map: CapabilityMap | None,

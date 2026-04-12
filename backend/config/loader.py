@@ -61,10 +61,17 @@ class SessionBudgetConfig(BaseModel):
     tier3_limit: int = 1
 
 
+class LangSmithConfig(BaseModel):
+    enabled: bool = False
+    api_key: str = ""
+    project: str = "signalforge"
+
+
 class SignalForgeConfig(BaseModel):
     seller_profile: SellerProfileConfig = Field(default_factory=SellerProfileConfig)
     api_keys: ApiKeysConfig = Field(default_factory=ApiKeysConfig)
     session_budget: SessionBudgetConfig = Field(default_factory=SessionBudgetConfig)
+    langsmith: LangSmithConfig = Field(default_factory=LangSmithConfig)
     capability_map_path: str = str(Path.home() / ".signalforge" / "capability_map.yaml")
 
 
@@ -99,6 +106,23 @@ def save_config(config: SignalForgeConfig) -> None:
         json.dumps(config.model_dump(), indent=2, ensure_ascii=False),
         encoding="utf-8",
     )
+
+
+def apply_langsmith_env(config: SignalForgeConfig | None = None) -> None:
+    """Sync LangSmith config to environment variables consumed by LangChain runtime.
+
+    Call on app startup and whenever LangSmith settings are saved.
+    """
+    if config is None:
+        config = load_config()
+    ls = config.langsmith
+    if ls.enabled and ls.api_key:
+        os.environ["LANGCHAIN_TRACING_V2"] = "true"
+        os.environ["LANGCHAIN_API_KEY"] = ls.api_key
+        os.environ["LANGCHAIN_PROJECT"] = ls.project or "signalforge"
+    else:
+        os.environ["LANGCHAIN_TRACING_V2"] = "false"
+        os.environ.pop("LANGCHAIN_API_KEY", None)
 
 
 def is_first_run() -> bool:
