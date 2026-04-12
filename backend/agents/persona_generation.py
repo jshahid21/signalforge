@@ -15,13 +15,37 @@ Recommended outreach sequence:
 """
 from __future__ import annotations
 
+import json
 import uuid
 from typing import Literal
 
 from backend.models.enums import HumanReviewReason
-from backend.models.state import CompanyState, Persona, SolutionMappingOutput
+from backend.models.state import CompanyState, Persona, ResearchResult, SolutionMappingOutput
 
 _LLM_COST = 0.003
+
+try:
+    from langchain_core.messages import HumanMessage
+except ImportError:
+    HumanMessage = None  # type: ignore[assignment]
+
+try:
+    from langchain_anthropic import ChatAnthropic
+except ImportError:
+    ChatAnthropic = None  # type: ignore[assignment,misc]
+
+try:
+    from langchain_openai import ChatOpenAI
+except ImportError:
+    ChatOpenAI = None  # type: ignore[assignment,misc]
+
+
+def _make_llm(llm_provider: str, llm_model: str):
+    provider = (llm_provider or "").strip().lower()
+    if provider in ("openai", "gpt", "chatgpt", "open_ai"):
+        return ChatOpenAI(model=llm_model, max_tokens=400, temperature=0.3)
+    else:
+        return ChatAnthropic(model=llm_model, max_tokens=400, temperature=0.3)
 
 # Signal type classification keywords
 _ML_KEYWORDS = {"ml", "machine learning", "ai", "artificial intelligence", "llm", "gpu",
@@ -279,6 +303,132 @@ def _build_personas_for_category(
     ]
 
 
+def _build_persona_customization_prompt(
+    category: str,
+    personas: list[Persona],
+    signal_summary: str,
+    core_problem: str,
+    solution_areas: list[str],
+    company_name: str,
+    research_result: ResearchResult | None,
+) -> str:
+    """Build prompt asking the LLM to customize persona titles for this company."""
+    from backend.utils.date import date_context_line
+
+    research_context = ""
+    if research_result:
+        parts = []
+        if research_result.get("company_context"):
+            parts.append(research_result["company_context"])
+        if research_result.get("tech_stack"):
+            parts.append("Tech stack: " + ", ".join(research_result["tech_stack"]))
+        if research_result.get("hiring_signals"):
+            parts.append(research_result["hiring_signals"])
+        research_context = " ".join(parts) if parts else "No research context."
+
+    persona_list = "\n".join(
+        f"  - role_type: {p['role_type']}, seniority: {p['seniority_level']}, "
+        f"default_title: \"{p['title']}\""
+        for p in personas
+    )
+
+    return f"""{date_context_line()}
+
+You are customizing B2B buyer persona titles for a specific company based on their signals.
+
+Company: {company_name}
+Signal category: {category}
+Signal summary: {signal_summary}
+Core problem: {core_problem}
+Solution areas: {", ".join(solution_areas) if solution_areas else "N/A"}
+Research context: {research_context or "No research context."}
+
+Current persona templates:
+{persona_list}
+
+Instructions:
+1. For EACH persona, generate a customized title that reflects this company's specific context, industry, and tech stack.
+2. Keep titles realistic for B2B sales targeting (real job titles people would have).
+3. Adjust priority_score (0.0–1.0) based on how relevant each role is to this company's specific signal.
+4. The role_type and seniority_level must NOT change.
+
+Output ONLY valid JSON — an array of objects, one per persona, in the SAME ORDER:
+[
+  {{"title": "<customized title>", "priority_score": <float 0.0-1.0>}},
+  ...
+]"""
+
+
+def _parse_persona_customization(text: str, count: int) -> list[dict] | None:
+    """Parse LLM response for persona customizations. Returns None on failure."""
+    text = text.strip()
+    start = text.find("[")
+    end = text.rfind("]") + 1
+    if start == -1 or end == 0:
+        return None
+    try:
+        data = json.loads(text[start:end])
+        if not isinstance(data, list) or len(data) != count:
+            return None
+        for item in data:
+            if not isinstance(item.get("title"), str) or not item["title"].strip():
+                return None
+            score = item.get("priority_score")
+            if not isinstance(score, (int, float)) or score < 0 or score > 1:
+                return None
+        return data
+    except (json.JSONDecodeError, ValueError, TypeError):
+        return None
+
+
+async def _customize_personas_with_llm(
+    personas: list[Persona],
+    category: str,
+    signal_summary: str,
+    core_problem: str,
+    solution_areas: list[str],
+    company_name: str,
+    research_result: ResearchResult | None,
+    llm_provider: str,
+    llm_model: str,
+) -> list[Persona] | None:
+    """Use LLM to customize persona titles. Returns None on failure (caller uses fallback)."""
+    if not llm_model or HumanMessage is None:
+        return None
+
+    prompt = _build_persona_customization_prompt(
+        category=category,
+        personas=personas,
+        signal_summary=signal_summary,
+        core_problem=core_problem,
+        solution_areas=solution_areas,
+        company_name=company_name,
+        research_result=research_result,
+    )
+
+    try:
+        llm = _make_llm(llm_provider, llm_model)
+        response = await llm.ainvoke([HumanMessage(content=prompt)])
+        parsed = _parse_persona_customization(str(response.content), len(personas))
+        if not parsed:
+            return None
+
+        customized: list[Persona] = []
+        for persona, custom in zip(personas, parsed):
+            customized.append(
+                _make_persona(
+                    title=custom["title"].strip(),
+                    role_type=persona["role_type"],
+                    seniority_level=persona["seniority_level"],
+                    targeting_reason=persona["targeting_reason"],
+                    priority_score=round(float(custom["priority_score"]), 2),
+                )
+            )
+        return customized
+    except Exception:
+        return None
+
+
 def _compute_outreach_sequence(personas: list[Persona], category: str) -> list[str]:
     """Compute recommended outreach sequence (ordered persona_ids).
 
@@ -345,6 +495,7 @@ async def run_persona_generation(
     company_name = cs["company_name"]
     qualified_signal = cs.get("qualified_signal")
     solution_mapping = cs.get("solution_mapping")
+    research_result = cs.get("research_result")
 
     signal_summary = qualified_signal["summary"] if qualified_signal else ""
     signal_type = qualified_signal["signal_type"] if qualified_signal else "unknown"
@@ -354,13 +505,32 @@ async def run_persona_generation(
     # Classify signal into a bias category (deterministic)
     category = _classify_signal(signal_summary, solution_areas, signal_type)
 
-    # Build personas deterministically from the bias rules
+    # Build deterministic persona templates from the bias rules
     personas = _build_personas_for_category(
         category=category,
         core_problem=core_problem,
         solution_areas=solution_areas,
         company_name=company_name,
     )
+
+    # Use LLM to customize titles/priorities based on company context (if budget allows)
+    cost_incurred = 0.0
+    budget_remaining = max_budget_usd - current_total_cost
+    if llm_model and budget_remaining >= _LLM_COST:
+        customized = await _customize_personas_with_llm(
+            personas=personas,
+            category=category,
+            signal_summary=signal_summary,
+            core_problem=core_problem,
+            solution_areas=solution_areas,
+            company_name=company_name,
+            research_result=research_result,
+            llm_provider=llm_provider,
+            llm_model=llm_model,
+        )
+        if customized is not None:
+            personas = customized
+            cost_incurred = _LLM_COST
 
     # Compute recommended outreach sequence
     sequence = _compute_outreach_sequence(personas, category)
@@ -379,4 +549,4 @@ async def run_persona_generation(
             existing_reasons.append(HumanReviewReason.PERSONA_UNRESOLVED)
         cs["human_review_reasons"] = existing_reasons  # type: ignore[index]
 
-    return cs, 0.0  # type: ignore[return-value]
+    return cs, cost_incurred  # type: ignore[return-value]

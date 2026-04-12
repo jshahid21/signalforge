@@ -1,11 +1,14 @@
 """Tests for Persona Generation Agent — signal→persona bias rules (spec §5.6)."""
 from __future__ import annotations
 
+from unittest.mock import AsyncMock, patch
+
 import pytest
 
 from backend.agents.persona_generation import (
     _classify_signal,
     _compute_outreach_sequence,
+    _parse_persona_customization,
     run_persona_generation,
 )
 from backend.models.enums import PipelineStatus, SignalTier
@@ -302,3 +305,192 @@ class TestOutreachSequencing:
         persona_by_id = {p["persona_id"]: p for p in personas}
         first_role = persona_by_id[sequence[0]]["role_type"]
         assert first_role == "blocker"
+
+
+class TestPersonaCustomizationParsing:
+    def test_valid_customization_parsed(self) -> None:
+        raw = '[{"title": "Head of ML Ops", "priority_score": 0.85}, {"title": "VP Data", "priority_score": 0.7}]'
+        result = _parse_persona_customization(raw, 2)
+        assert result is not None
+        assert result[0]["title"] == "Head of ML Ops"
+        assert result[1]["priority_score"] == 0.7
+
+    def test_wrong_count_returns_none(self) -> None:
+        raw = '[{"title": "Head of ML Ops", "priority_score": 0.85}]'
+        assert _parse_persona_customization(raw, 2) is None
+
+    def test_missing_title_returns_none(self) -> None:
+        raw = '[{"priority_score": 0.85}]'
+        assert _parse_persona_customization(raw, 1) is None
+
+    def test_invalid_score_returns_none(self) -> None:
+        raw = '[{"title": "VP", "priority_score": 1.5}]'
+        assert _parse_persona_customization(raw, 1) is None
+
+    def test_invalid_json_returns_none(self) -> None:
+        assert _parse_persona_customization("not json", 1) is None
+
+
+class TestLLMPersonaCustomization:
+    """Regression tests for issue #14: identical personas across companies."""
+
+    @pytest.mark.asyncio
+    async def test_different_companies_same_category_get_different_titles(self) -> None:
+        """When LLM is available, two companies in the same signal category should
+        get different persona titles based on their specific context."""
+        # Two companies that would both classify as "infra_scaling"
+        cs_stripe = _make_company_state(
+            signal_summary="Kubernetes multi-region platform engineering",
+            signal_type="engineering_blog",
+            core_problem="Scaling payment processing infrastructure globally.",
+            solution_areas=["Container orchestration", "Multi-region deployment"],
+        )
+        cs_stripe["company_name"] = "Stripe"
+        cs_stripe["company_id"] = "stripe"
+        cs_stripe["research_result"] = ResearchResult(
+            company_context="Stripe is a global payments company processing billions.",
+            tech_stack=["kubernetes", "ruby", "go"],
+            hiring_signals="Hiring platform engineers for payments infra.",
+            partial=False,
+        )
+
+        cs_datadog = _make_company_state(
+            signal_summary="Kubernetes platform engineering scaling observability",
+            signal_type="engineering_blog",
+            core_problem="Scaling observability data pipeline infrastructure.",
+            solution_areas=["Container orchestration", "Data pipeline scaling"],
+        )
+        cs_datadog["company_name"] = "Datadog"
+        cs_datadog["company_id"] = "datadog"
+        cs_datadog["research_result"] = ResearchResult(
+            company_context="Datadog is a monitoring and observability platform.",
+            tech_stack=["kubernetes", "go", "python"],
+            hiring_signals="Hiring SREs for observability pipeline.",
+            partial=False,
+        )
+
+        # Mock LLM to return different titles per company
+        stripe_response = AsyncMock()
+        stripe_response.content = (
+            '[{"title": "Head of Payments Infrastructure", "priority_score": 0.92},'
+            ' {"title": "VP of Platform Engineering", "priority_score": 0.75},'
+            ' {"title": "Staff Payments SRE", "priority_score": 0.8}]'
+        )
+        datadog_response = AsyncMock()
+        datadog_response.content = (
+            '[{"title": "Director of Observability Platform", "priority_score": 0.9},'
+            ' {"title": "VP of Infrastructure", "priority_score": 0.72},'
+            ' {"title": "Senior Pipeline Engineer", "priority_score": 0.78}]'
+        )
+
+        call_count = 0
+
+        async def mock_ainvoke(messages):
+            nonlocal call_count
+            call_count += 1
+            # Return different responses based on call order
+            if call_count == 1:
+                return stripe_response
+            return datadog_response
+
+        mock_llm = AsyncMock()
+        mock_llm.ainvoke = mock_ainvoke
+
+        with patch("backend.agents.persona_generation._make_llm", return_value=mock_llm):
+            result_stripe, cost_stripe = await run_persona_generation(
+                cs=cs_stripe, llm_provider="anthropic", llm_model="claude-3-sonnet",
+                current_total_cost=0.0, max_budget_usd=1.0,
+            )
+            result_datadog, cost_datadog = await run_persona_generation(
+                cs=cs_datadog, llm_provider="anthropic", llm_model="claude-3-sonnet",
+                current_total_cost=0.0, max_budget_usd=1.0,
+            )
+
+        stripe_titles = {p["title"] for p in result_stripe["generated_personas"]}
+        datadog_titles = {p["title"] for p in result_datadog["generated_personas"]}
+
+        # Titles must differ between companies (the core bug: they used to be identical)
+        assert stripe_titles != datadog_titles, (
+            f"Personas should differ across companies but got identical titles: {stripe_titles}"
+        )
+        # Cost should be incurred when LLM is used
+        assert cost_stripe == 0.003
+        assert cost_datadog == 0.003
+
+    @pytest.mark.asyncio
+    async def test_llm_failure_falls_back_to_deterministic(self) -> None:
+        """If LLM call fails, personas should fall back to deterministic templates."""
+        cs = _make_company_state(
+            signal_summary="Kubernetes platform engineering",
+            signal_type="engineering_blog",
+            core_problem="Scaling infrastructure.",
+            solution_areas=["Container orchestration"],
+        )
+
+        mock_llm = AsyncMock()
+        mock_llm.ainvoke.side_effect = Exception("LLM unavailable")
+
+        with patch("backend.agents.persona_generation._make_llm", return_value=mock_llm):
+            result, cost = await run_persona_generation(
+                cs=cs, llm_provider="anthropic", llm_model="claude-3-sonnet",
+                current_total_cost=0.0, max_budget_usd=1.0,
+            )
+
+        # Should still produce valid personas (deterministic fallback)
+        personas = result["generated_personas"]
+        assert len(personas) >= 2
+        # Cost should be 0 since LLM failed
+        assert cost == 0.0
+
+    @pytest.mark.asyncio
+    async def test_no_llm_model_uses_deterministic(self) -> None:
+        """Without LLM model configured, should use deterministic templates (no cost)."""
+        cs = _make_company_state()
+        result, cost = await run_persona_generation(
+            cs=cs, llm_provider="", llm_model="",
+            current_total_cost=0.0, max_budget_usd=1.0,
+        )
+        personas = result["generated_personas"]
+        assert len(personas) >= 2
+        assert cost == 0.0
+
+    @pytest.mark.asyncio
+    async def test_budget_exceeded_uses_deterministic(self) -> None:
+        """When budget is exceeded, should use deterministic templates."""
+        cs = _make_company_state()
+        result, cost = await run_persona_generation(
+            cs=cs, llm_provider="anthropic", llm_model="claude-3-sonnet",
+            current_total_cost=0.999, max_budget_usd=1.0,
+        )
+        personas = result["generated_personas"]
+        assert len(personas) >= 2
+        assert cost == 0.0
+
+    @pytest.mark.asyncio
+    async def test_customized_personas_preserve_role_types(self) -> None:
+        """LLM customization must preserve role_type and seniority_level from templates."""
+        cs = _make_company_state(
+            signal_summary="ML platform tensorflow pytorch deep learning",
+            signal_type="engineering_blog",
+            solution_areas=["ML pipeline automation"],
+        )
+
+        mock_response = AsyncMock()
+        mock_response.content = (
+            '[{"title": "Chief AI Officer", "priority_score": 0.75},'
+            ' {"title": "Director of ML Infrastructure", "priority_score": 0.92},'
+            ' {"title": "ML Platform Engineer", "priority_score": 0.85}]'
+        )
+        mock_llm = AsyncMock()
+        mock_llm.ainvoke.return_value = mock_response
+
+        with patch("backend.agents.persona_generation._make_llm", return_value=mock_llm):
+            result, _ = await run_persona_generation(
+                cs=cs, llm_provider="anthropic", llm_model="claude-3-sonnet",
+                current_total_cost=0.0, max_budget_usd=1.0,
+            )
+
+        personas = result["generated_personas"]
+        role_types = [p["role_type"] for p in personas]
+        # ml_ai category: economic_buyer, technical_buyer, influencer (in template order)
+        assert role_types == ["economic_buyer", "technical_buyer", "influencer"]
