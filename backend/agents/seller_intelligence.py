@@ -388,8 +388,12 @@ async def auto_link_intelligence(
 
     route = _normalized_llm_provider(llm_provider)
     if route == "openai":
+        if ChatOpenAI is None:
+            raise RuntimeError("langchain-openai not installed")
         llm = ChatOpenAI(model=llm_model.strip().lower(), max_tokens=2000, temperature=0)
     else:
+        if ChatAnthropic is None:
+            raise RuntimeError("langchain-anthropic not installed")
         llm = ChatAnthropic(model=llm_model.strip(), max_tokens=2000, temperature=0)
 
     response = await llm.ainvoke([HumanMessage(content=prompt)])
