@@ -114,13 +114,17 @@ export function SetupWizard({ onComplete }: Props) {
 
       // 2. Extract intelligence from chosen source
       if (intelSource !== 'none') {
-        setOrchestrationStatus('Extracting seller intelligence...')
         try {
           if (intelSource === 'url') {
+            setOrchestrationStatus('Scraping website — this may take 30-60 seconds...')
             await settingsApi.extractSellerIntelligence({ website_url: websiteUrl.trim() })
           } else if (intelSource === 'files') {
+            const totalSize = selectedFiles.reduce((s, f) => s + f.size, 0)
+            const sizeMB = (totalSize / (1024 * 1024)).toFixed(1)
+            setOrchestrationStatus(`Uploading ${selectedFiles.length} file${selectedFiles.length > 1 ? 's' : ''} (${sizeMB} MB) and analyzing with AI — large documents may take 30-60 seconds...`)
             await settingsApi.extractFromFiles(selectedFiles)
           } else if (intelSource === 'text') {
+            setOrchestrationStatus('Analyzing pasted text with AI...')
             await settingsApi.extractSellerIntelligence({ text: pasteText.trim() })
           }
 

@@ -153,7 +153,7 @@ function SellerProfileTab() {
             || (extractSource === 'files' && selectedFiles.length === 0)
             || (extractSource === 'text' && !pasteText.trim())}
           className="rounded-md bg-gray-100 border border-gray-300 px-3 py-2 text-sm text-gray-700 hover:bg-gray-200 disabled:opacity-50">
-          {extracting ? 'Extracting...' : extractSource === 'url' ? 'Re-scrape' : extractSource === 'files' ? 'Extract from Files' : 'Extract from Text'}
+          {extracting ? 'Analyzing — may take 30-60s for large files...' : extractSource === 'url' ? 'Re-scrape' : extractSource === 'files' ? 'Extract from Files' : 'Extract from Text'}
         </button>
         {extractError && <p className="mt-1 text-xs text-red-500">{extractError}</p>}
       </div>
