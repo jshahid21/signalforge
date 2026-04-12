@@ -154,6 +154,11 @@ async def run_solution_mapping(
     Returns (updated_cs, cost_incurred).
     """
     company_name = cs["company_name"]
+
+    # Mark current stage at entry so frontend progress bar tracks correctly
+    cs = dict(cs)  # type: ignore[assignment]
+    cs["current_stage"] = "solution_mapping"  # type: ignore[index]
+
     qualified_signal = cs.get("qualified_signal")
     research_result = cs.get("research_result")
 

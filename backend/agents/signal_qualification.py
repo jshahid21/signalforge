@@ -213,6 +213,11 @@ async def run_signal_qualification(
     company_name = cs.get("company_name", "?")
     signals = cs.get("raw_signals", [])
     cost_incurred = 0.0
+
+    # Mark current stage at entry so frontend progress bar tracks correctly
+    cs = dict(cs)  # type: ignore[assignment]
+    cs["current_stage"] = "signal_qualification"  # type: ignore[index]
+
     logger.info("[%s] qualification start | signals=%d | budget_remaining=$%.3f",
                 company_name, len(signals), max_budget_usd - current_total_cost)
 

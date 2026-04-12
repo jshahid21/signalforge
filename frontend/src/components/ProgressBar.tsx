@@ -4,19 +4,19 @@
  */
 import type { PipelineStatus } from '../api/client'
 
-const STAGES = ['signals', 'qualifying', 'researching', 'mapping', 'generating']
+const STAGES = ['signal_ingestion', 'signal_qualification', 'research', 'solution_mapping', 'persona_generation']
 
 const STAGE_LABELS: Record<string, string> = {
-  signals: 'Signals',
-  qualifying: 'Qualifying',
-  researching: 'Researching',
-  mapping: 'Mapping',
-  generating: 'Generating',
+  signal_ingestion: 'Signals',
+  signal_qualification: 'Qualifying',
+  research: 'Researching',
+  solution_mapping: 'Mapping',
+  persona_generation: 'Generating',
 }
 
 function stageIndex(stage: string | undefined | null): number {
-  const normalized = String(stage ?? '').toLowerCase().replace(/_/g, '')
-  const idx = STAGES.findIndex(s => normalized.includes(s))
+  const normalized = String(stage ?? '').toLowerCase()
+  const idx = STAGES.indexOf(normalized)
   return idx === -1 ? 0 : idx
 }
 

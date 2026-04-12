@@ -262,6 +262,10 @@ async def run_signal_ingestion(
     company_name = cs["company_name"]
     cost_incurred = 0.0
 
+    # Mark current stage at entry so frontend progress bar tracks correctly
+    cs = dict(cs)  # type: ignore[assignment]
+    cs["current_stage"] = "signal_ingestion"  # type: ignore[index]
+
     # Budget check before any API call
     if current_total_cost >= max_budget_usd:
         cs = dict(cs)  # type: ignore[assignment]

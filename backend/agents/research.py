@@ -128,6 +128,10 @@ async def run_research(
     Returns (updated_cs, cost_incurred).
     Graceful: continues even if individual sub-tasks fail; sets partial=True.
     """
+    # Mark current stage at entry so frontend progress bar tracks correctly
+    cs = dict(cs)  # type: ignore[assignment]
+    cs["current_stage"] = "research"  # type: ignore[index]
+
     # Budget check before any LLM calls
     if current_total_cost >= max_budget_usd:
         cs = dict(cs)  # type: ignore[assignment]
