@@ -8,6 +8,10 @@ import pytest
 import yaml
 
 from backend.config.loader import (
+    SalesPlay,
+    ProofPoint,
+    SellerIntelligence,
+    SellerProfileConfig,
     SignalForgeConfig,
     is_first_run,
     load_config,
@@ -253,3 +257,126 @@ class TestCapabilityMapSave:
         assert loaded is not None
         assert loaded.entries[0].id == "test_cap"
         assert loaded.entries[0].problem_signals == ["foo"]
+
+
+# ---------------------------------------------------------------------------
+# Seller intelligence model tests
+# ---------------------------------------------------------------------------
+
+
+class TestSellerIntelligenceModel:
+    def test_default_empty(self) -> None:
+        si = SellerIntelligence()
+        assert si.differentiators == []
+        assert si.sales_plays == []
+        assert si.proof_points == []
+        assert si.competitive_positioning == []
+        assert si.last_scraped is None
+
+    def test_full_model(self) -> None:
+        si = SellerIntelligence(
+            differentiators=["Best-in-class ML ops"],
+            sales_plays=[SalesPlay(play="FinOps optimization", category="cost_optimization")],
+            proof_points=[ProofPoint(customer="Acme Corp", summary="Reduced costs by 40%")],
+            competitive_positioning=["Unlike X, we offer Y"],
+            last_scraped="2026-04-12T00:00:00Z",
+        )
+        assert len(si.differentiators) == 1
+        assert si.sales_plays[0].category == "cost_optimization"
+        assert si.proof_points[0].customer == "Acme Corp"
+        assert si.last_scraped == "2026-04-12T00:00:00Z"
+
+    def test_serialization_round_trip(self) -> None:
+        si = SellerIntelligence(
+            differentiators=["Unique feature"],
+            sales_plays=[SalesPlay(play="Cost reduction", category="cost")],
+            proof_points=[ProofPoint(customer="TestCo", summary="50% improvement")],
+            competitive_positioning=["Better than competitor"],
+            last_scraped="2026-01-01T00:00:00Z",
+        )
+        data = si.model_dump()
+        restored = SellerIntelligence.model_validate(data)
+        assert restored.differentiators == si.differentiators
+        assert restored.sales_plays[0].play == "Cost reduction"
+
+
+class TestSellerProfileConfigWithIntelligence:
+    def test_default_has_empty_intelligence(self) -> None:
+        spc = SellerProfileConfig()
+        assert spc.website_url is None
+        assert isinstance(spc.seller_intelligence, SellerIntelligence)
+        assert spc.seller_intelligence.differentiators == []
+
+    def test_config_round_trip_with_intelligence(self, tmp_config_dir: Path) -> None:
+        config = load_config()
+        config.seller_profile.website_url = "https://example.com"
+        config.seller_profile.seller_intelligence = SellerIntelligence(
+            differentiators=["Fast deployment"],
+            sales_plays=[SalesPlay(play="DevOps acceleration", category="devops")],
+        )
+        save_config(config)
+
+        loaded = load_config()
+        assert loaded.seller_profile.website_url == "https://example.com"
+        assert loaded.seller_profile.seller_intelligence.differentiators == ["Fast deployment"]
+        assert loaded.seller_profile.seller_intelligence.sales_plays[0].category == "devops"
+
+    def test_backward_compat_old_config_without_intelligence(self, tmp_config_dir: Path) -> None:
+        """Config files from before this feature (no website_url, no seller_intelligence) load fine."""
+        config_file = tmp_config_dir / "config.json"
+        old_config = {
+            "seller_profile": {
+                "company_name": "OldCo",
+                "portfolio_summary": "Legacy tools",
+                "portfolio_items": ["Tool A"],
+            },
+            "api_keys": {},
+            "session_budget": {},
+        }
+        config_file.write_text(json.dumps(old_config), encoding="utf-8")
+
+        config = load_config()
+        assert config.seller_profile.company_name == "OldCo"
+        assert config.seller_profile.website_url is None
+        assert config.seller_profile.seller_intelligence.differentiators == []
+
+    def test_update_seller_profile_with_intelligence(self, tmp_config_dir: Path) -> None:
+        intelligence = SellerIntelligence(
+            differentiators=["AI-native platform"],
+            proof_points=[ProofPoint(customer="BigCorp", summary="2x productivity")],
+        )
+        profile = update_seller_profile(
+            company_name="NewCo",
+            portfolio_summary="AI tools",
+            portfolio_items=["Agent SDK"],
+            website_url="https://newco.com",
+            seller_intelligence=intelligence,
+        )
+        assert profile.website_url == "https://newco.com"
+        assert profile.seller_intelligence.differentiators == ["AI-native platform"]
+
+        # Verify persistence
+        reloaded = get_seller_profile()
+        assert reloaded.website_url == "https://newco.com"
+        assert reloaded.seller_intelligence.proof_points[0].customer == "BigCorp"
+
+    def test_update_seller_profile_preserves_intelligence_when_not_provided(
+        self, tmp_config_dir: Path
+    ) -> None:
+        """Updating profile without passing intelligence should preserve existing intelligence."""
+        # Set initial intelligence
+        update_seller_profile(
+            company_name="Co",
+            portfolio_summary="",
+            portfolio_items=[],
+            seller_intelligence=SellerIntelligence(differentiators=["Existing diff"]),
+        )
+
+        # Update only basic fields
+        profile = update_seller_profile(
+            company_name="Co Updated",
+            portfolio_summary="Updated summary",
+            portfolio_items=["New item"],
+        )
+        assert profile.company_name == "Co Updated"
+        assert profile.seller_intelligence.differentiators == ["Existing diff"]

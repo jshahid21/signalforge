@@ -4,9 +4,12 @@ from __future__ import annotations
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from backend.config.loader import (
+    SalesPlay,
+    ProofPoint,
+    SellerIntelligence,
     load_config,
     save_config,
 )
@@ -19,10 +22,20 @@ router = APIRouter(prefix="/settings", tags=["settings"])
 # ---------------------------------------------------------------------------
 
 
+class SellerIntelligenceBody(BaseModel):
+    differentiators: list[str] = Field(default_factory=list)
+    sales_plays: list[SalesPlay] = Field(default_factory=list)
+    proof_points: list[ProofPoint] = Field(default_factory=list)
+    competitive_positioning: list[str] = Field(default_factory=list)
+    last_scraped: Optional[str] = None
+
+
 class SellerProfileBody(BaseModel):
     company_name: str = ""
     portfolio_summary: str = ""
     portfolio_items: list[str] = []
+    website_url: Optional[str] = None
+    seller_intelligence: Optional[SellerIntelligenceBody] = None
 
 
 @router.get("/seller-profile")
@@ -37,6 +50,12 @@ async def update_seller_profile(body: SellerProfileBody) -> dict:
     config.seller_profile.company_name = body.company_name
     config.seller_profile.portfolio_summary = body.portfolio_summary
     config.seller_profile.portfolio_items = body.portfolio_items
+    if body.website_url is not None:
+        config.seller_profile.website_url = body.website_url
+    if body.seller_intelligence is not None:
+        config.seller_profile.seller_intelligence = SellerIntelligence(
+            **body.seller_intelligence.model_dump()
+        )
     save_config(config)
     return {"status": "saved", "seller_profile": config.seller_profile.model_dump()}
 

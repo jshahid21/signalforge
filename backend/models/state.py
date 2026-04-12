@@ -120,10 +120,30 @@ class CompanyError(TypedDict):
     recoverable: bool
 
 
-class SellerProfile(TypedDict):
+class SalesPlayDict(TypedDict):
+    play: str
+    category: str
+
+
+class ProofPointDict(TypedDict):
+    customer: str
+    summary: str
+
+
+class SellerIntelligenceDict(TypedDict, total=False):
+    differentiators: List[str]
+    sales_plays: List[SalesPlayDict]
+    proof_points: List[ProofPointDict]
+    competitive_positioning: List[str]
+    last_scraped: Optional[str]
+
+
+class SellerProfile(TypedDict, total=False):
     company_name: str
     portfolio_summary: str
     portfolio_items: List[str]
+    website_url: Optional[str]
+    seller_intelligence: SellerIntelligenceDict
 
 
 # ---------------------------------------------------------------------------
