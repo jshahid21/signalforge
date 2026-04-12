@@ -55,3 +55,67 @@ def log_draft_feedback(
         )
     except Exception:
         logger.warning("Failed to log LangSmith feedback for run %s", run_id, exc_info=True)
+
+
+APPROVED_DRAFTS_DATASET = "signalforge-approved-drafts"
+
+
+def store_approved_draft_as_example(
+    *,
+    signal_summary: str,
+    signal_category: Optional[str],
+    persona_title: str,
+    persona_role_type: str,
+    technical_context: str,
+    subject_line: str,
+    body: str,
+    confidence_score: float,
+) -> None:
+    """Store an approved draft as a LangSmith dataset example.
+
+    Creates the dataset if it doesn't exist, then adds the example with
+    input (signal, persona, context) and output (approved draft text).
+
+    Graceful no-op when tracing is disabled or langsmith is not installed.
+    """
+    if not _tracing_enabled():
+        return
+
+    try:
+        from langsmith import Client
+    except ImportError:
+        logger.debug("langsmith not installed — skipping dataset storage")
+        return
+
+    try:
+        client = Client()
+
+        # Ensure dataset exists (create_dataset is idempotent on name collision)
+        try:
+            client.read_dataset(dataset_name=APPROVED_DRAFTS_DATASET)
+        except Exception:
+            client.create_dataset(
+                APPROVED_DRAFTS_DATASET,
+                description="Approved drafts for SignalForge evaluation",
+            )
+
+        client.create_example(
+            inputs={
+                "signal_summary": signal_summary,
+                "persona_title": persona_title,
+                "persona_role_type": persona_role_type,
+                "technical_context": technical_context,
+            },
+            outputs={
+                "subject_line": subject_line,
+                "body": body,
+            },
+            metadata={
+                "signal_category": signal_category,
+                "persona_role_type": persona_role_type,
+                "confidence_score": confidence_score,
+            },
+            dataset_name=APPROVED_DRAFTS_DATASET,
+        )
+    except Exception:
+        logger.warning("Failed to store approved draft as LangSmith example", exc_info=True)

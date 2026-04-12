@@ -156,6 +156,22 @@ async def approve_draft(
         from backend.utils.langsmith_feedback import log_draft_feedback
         log_draft_feedback(run_id=draft["run_id"], approved=True)
 
+    # Store approved draft as LangSmith dataset example
+    from backend.utils.langsmith_feedback import store_approved_draft_as_example
+
+    qualified_signal_for_ds = cs.get("qualified_signal")
+    synthesis_for_ds = cs.get("synthesis_outputs", {}).get(persona_id)
+    store_approved_draft_as_example(
+        signal_summary=qualified_signal_for_ds["summary"] if qualified_signal_for_ds else "",
+        signal_category=cs.get("persona_signal_category"),
+        persona_title=persona.get("title", ""),
+        persona_role_type=persona.get("role_type", ""),
+        technical_context=synthesis_for_ds["technical_context"] if synthesis_for_ds else "",
+        subject_line=draft.get("subject_line", ""),
+        body=draft.get("body", ""),
+        confidence_score=draft.get("confidence_score", 0.0),
+    )
+
     # Mark draft as approved in memory
     draft = dict(draft)
     draft["approved"] = True
