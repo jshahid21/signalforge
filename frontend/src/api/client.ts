@@ -191,11 +191,30 @@ export class WsManager {
   private ws: WebSocket | null = null
   private sessionId: string | null = null
   private handlers: Array<(event: WsEvent) => void> = []
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null
+  private reconnectAttempt = 0
+  private intentionalDisconnect = false
+  private _connected = false
+
+  private static MAX_RECONNECT_DELAY = 30_000
+  private static BASE_DELAY = 1_000
 
   connect(sessionId: string) {
     this.disconnect()
     this.sessionId = sessionId
-    this.ws = new WebSocket(`${WS_BASE}/ws/${sessionId}`)
+    this.intentionalDisconnect = false
+    this.reconnectAttempt = 0
+    this._openSocket()
+  }
+
+  private _openSocket() {
+    if (!this.sessionId) return
+    this.ws = new WebSocket(`${WS_BASE}/ws/${this.sessionId}`)
+
+    this.ws.onopen = () => {
+      this._connected = true
+      this.reconnectAttempt = 0
+    }
 
     this.ws.onmessage = (e: MessageEvent) => {
       try {
@@ -205,12 +224,42 @@ export class WsManager {
         // Ignore non-JSON messages
       }
     }
+
+    this.ws.onclose = () => {
+      this._connected = false
+      if (!this.intentionalDisconnect) {
+        this._scheduleReconnect()
+      }
+    }
+
+    this.ws.onerror = () => {
+      // onclose fires after onerror, so reconnection is handled there
+    }
+  }
+
+  private _scheduleReconnect() {
+    if (this.reconnectTimer) return
+    const delay = Math.min(
+      WsManager.BASE_DELAY * 2 ** this.reconnectAttempt,
+      WsManager.MAX_RECONNECT_DELAY,
+    )
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null
+      this.reconnectAttempt++
+      this._openSocket()
+    }, delay)
   }
 
   disconnect() {
+    this.intentionalDisconnect = true
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer)
+      this.reconnectTimer = null
+    }
     this.ws?.close()
     this.ws = null
     this.sessionId = null
+    this._connected = false
   }
 
   onEvent(handler: (event: WsEvent) => void) {
@@ -218,6 +267,10 @@ export class WsManager {
     return () => {
       this.handlers = this.handlers.filter(h => h !== handler)
     }
+  }
+
+  get connected() {
+    return this._connected
   }
 
   get connectedSessionId() {
