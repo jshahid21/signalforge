@@ -54,10 +54,11 @@ The current setup wizard has three problems:
 **Step 1 — About You**
 - Company Name (required)
 - Products / Services (one per line, textarea)
-- Seller intelligence source — three mutually exclusive options:
+- Seller intelligence source — three options (all optional, user may skip):
   - **Website URL** (existing behavior, for sites that allow crawling)
-  - **Upload files** (NEW: PDF, DOCX, HTML, TXT via file input, multiple files)
+  - **Upload files** (NEW: PDF, DOCX, PPTX, XLSX, HTML, TXT via file input, multiple files)
   - **Paste text** (NEW: textarea for copy-paste from internal docs)
+- If no intelligence source provided, setup proceeds without intelligence extraction (products still generate capability map)
 
 **Step 2 — API Keys**
 - JSearch, Tavily, LLM provider/model (same as current)
@@ -76,7 +77,7 @@ The current setup wizard has three problems:
 ### Kept in SettingsPanel (power users)
 - Edit capability map manually (existing)
 - Edit seller intelligence manually (existing)
-- Re-scrape / re-upload / re-extract (extend with file upload option)
+- Re-scrape / re-upload / re-extract / paste text (extend with all three source options)
 - All three capability map generation modes (existing)
 
 ### Multi-Source File Extraction
@@ -90,12 +91,31 @@ The current setup wizard has three problems:
   - TXT: direct read (decode UTF-8)
 - Supports multiple files uploaded at once — text from all files is combined before LLM extraction
 - All sources feed extracted text into the same LLM extraction prompt used by website scraping
+- LLM extraction prompt must be generalized from "website content" to "B2B sales collateral" to handle non-website sources
 - Same SellerIntelligence output structure regardless of source
+- **Paste text handling**: Reuse the existing `POST /settings/seller-intelligence/extract` endpoint with a new `text` field in the request body (alongside existing `website_url`). One or the other, not both.
+
+### File Upload Limits and Validation
+- Max 10MB per file, 5 files max
+- Frontend validates file size and count before upload (prevents oversized uploads)
+- Backend returns 413 if limits exceeded, with message: "File too large. Maximum 10MB per file."
+- Backend validates file extension against allowlist: `.pdf`, `.docx`, `.pptx`, `.xlsx`, `.html`, `.htm`, `.txt`
+- Unsupported file types return 400 with message: "Unsupported file type. Accepted: PDF, DOCX, PPTX, XLSX, HTML, TXT"
 
 ### Better Error Handling
 - When website scraping gets 403 or similar block: show friendly message suggesting file upload or paste as alternatives
 - Message example: "Your website blocked our crawler (common for enterprise sites). Try uploading a pitch deck or case study PDF instead."
 - No raw 422 errors for scraping failures
+- **Scraping failure is a soft failure**: setup completes, user can re-try with file upload via SettingsPanel. The wizard does not block on extraction failure.
+
+### Setup Completion Orchestration
+After Step 2 (API Keys) is saved, the frontend orchestrates sequentially:
+1. Generate capability map from product list (must complete first)
+2. Extract seller intelligence from chosen source (if any source was provided)
+3. Auto-link intelligence to capability map entries (only if both exist)
+4. Mark setup complete
+- Show a loading state during this sequence with progress updates
+- Reuse existing loading/spinner UX from current async extraction
 
 ## Stakeholders
 - **Primary Users**: Enterprise sellers setting up SignalForge for the first time
@@ -186,8 +206,8 @@ Approach 1 is simpler, addresses the core problem (enterprise sites block crawle
 - [x] None — the issue description is comprehensive
 
 ### Important (Affects Design)
-- [ ] Should the paste-text source also be available in SettingsPanel? (Assuming yes, for consistency)
-- [ ] Should file uploads be persisted on disk, or just processed and discarded? (Assuming discarded — we keep the extracted intelligence, not the raw files)
+- [x] Should the paste-text source also be available in SettingsPanel? **Yes** — all three sources available in both wizard and settings for consistency.
+- [x] Should file uploads be persisted on disk, or just processed and discarded? **Discarded** — we keep the extracted intelligence, not the raw files.
 
 ### Nice-to-Know (Optimization)
 - [ ] Should we support drag-and-drop file upload? (Nice UX but not required for MVP)
@@ -229,6 +249,7 @@ Approach 1 is simpler, addresses the core problem (enterprise sites block crawle
   - `python-docx` — DOCX text extraction
   - `python-pptx` — PPTX text extraction (slides)
   - `openpyxl` — XLSX text extraction (cell values)
+  - `python-multipart` — required by FastAPI for multipart/form-data file uploads
 - **Internal Systems**:
   - Existing LLM extraction pipeline (seller_intelligence.py)
   - Existing capability map generator (capability_map_generator.py)
@@ -250,6 +271,7 @@ Approach 1 is simpler, addresses the core problem (enterprise sites block crawle
 ### What Changes in the Config Model
 - No schema changes needed for SellerIntelligence — the output structure is the same regardless of source
 - The source type (url/files/text) is transient — not persisted in config
+- The existing `last_scraped` field keeps its name for backward compatibility but applies to all source types (it records when intelligence was last extracted, regardless of source)
 - Consider adding `last_source_type` field to SellerIntelligence for display purposes (optional)
 
 ### Migration / Backward Compatibility
