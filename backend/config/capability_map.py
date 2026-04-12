@@ -16,7 +16,10 @@ from .loader import load_config
 
 
 class CapabilityMapEntry:
-    __slots__ = ("id", "label", "problem_signals", "solution_areas")
+    __slots__ = (
+        "id", "label", "problem_signals", "solution_areas",
+        "differentiators", "sales_plays", "proof_points",
+    )
 
     def __init__(self, data: dict[str, Any]) -> None:
         if "id" not in data:
@@ -27,6 +30,9 @@ class CapabilityMapEntry:
         self.label: str = data["label"]
         self.problem_signals: list[str] = data.get("problem_signals") or []
         self.solution_areas: list[str] = data.get("solution_areas") or []
+        self.differentiators: list[str] = data.get("differentiators") or []
+        self.sales_plays: list[dict[str, str]] = data.get("sales_plays") or []
+        self.proof_points: list[dict[str, str]] = data.get("proof_points") or []
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -34,6 +40,9 @@ class CapabilityMapEntry:
             "label": self.label,
             "problem_signals": self.problem_signals,
             "solution_areas": self.solution_areas,
+            "differentiators": self.differentiators,
+            "sales_plays": self.sales_plays,
+            "proof_points": self.proof_points,
         }
 
 
