@@ -16,6 +16,7 @@ const noop = async () => {}
 describe('DraftPanel polish', () => {
   const mockDraft: Draft = {
     draft_id: 'd1',
+    company_id: 'c1',
     persona_id: 'p1',
     subject_line: 'Test Subject',
     body: 'Test body content',
