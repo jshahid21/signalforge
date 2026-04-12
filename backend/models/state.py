@@ -12,7 +12,7 @@ from __future__ import annotations
 import operator
 from typing import Annotated, Dict, List, Literal, Optional
 
-from typing_extensions import TypedDict
+from typing_extensions import NotRequired, TypedDict
 
 from backend.models.enums import HumanReviewReason, PipelineStatus, SignalTier
 
@@ -138,12 +138,12 @@ class SellerIntelligenceDict(TypedDict, total=False):
     last_scraped: Optional[str]
 
 
-class SellerProfile(TypedDict, total=False):
+class SellerProfile(TypedDict):
     company_name: str
     portfolio_summary: str
     portfolio_items: List[str]
-    website_url: Optional[str]
-    seller_intelligence: SellerIntelligenceDict
+    website_url: NotRequired[Optional[str]]
+    seller_intelligence: NotRequired[SellerIntelligenceDict]
 
 
 # ---------------------------------------------------------------------------
