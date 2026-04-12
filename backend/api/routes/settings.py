@@ -153,7 +153,7 @@ async def extract_seller_intelligence(body: ExtractIntelligenceRequest) -> dict:
 async def extract_from_files(files: list[UploadFile]) -> dict:
     """Extract seller intelligence from uploaded files (PDF, DOCX, PPTX, XLSX, HTML, TXT).
 
-    Accepts multipart file upload. Max 5 files, 10 MB each.
+    Accepts multipart file upload. Max 5 files, 50 MB each.
     """
     from backend.agents.seller_intelligence import extract_and_save_seller_intelligence
     from backend.tools.document_parser import (
@@ -185,7 +185,7 @@ async def extract_from_files(files: list[UploadFile]) -> dict:
         if len(content) > MAX_FILE_SIZE:
             raise HTTPException(
                 status_code=413,
-                detail=f"File too large: '{f.filename}'. Maximum 10MB per file.",
+                detail=f"File too large: '{f.filename}'. Maximum 50MB per file.",
             )
         file_data.append((content, f.filename or "unknown"))
 
