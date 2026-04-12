@@ -432,3 +432,48 @@ class TestSellerProfileConfigWithIntelligence:
         )
         assert profile.company_name == "Co Updated"
         assert profile.seller_intelligence.differentiators == ["Existing diff"]
+
+
+# ---------------------------------------------------------------------------
+# Seller context fields tests
+# ---------------------------------------------------------------------------
+
+
+class TestSellerContextFields:
+    def test_default_seller_context_fields(self, tmp_config_dir: Path) -> None:
+        config = load_config()
+        assert config.seller_profile.target_verticals == []
+        assert config.seller_profile.value_metrics == []
+        assert config.seller_profile.competitive_counters == {}
+        assert config.seller_profile.company_size_messaging == {}
+
+    def test_seller_context_round_trip(self, tmp_config_dir: Path) -> None:
+        config = load_config()
+        config.seller_profile.target_verticals = ["fintech", "healthcare"]
+        config.seller_profile.value_metrics = ["40% faster deploys"]
+        config.seller_profile.competitive_counters = {"Competitor": ["Lower cost"]}
+        config.seller_profile.company_size_messaging = {"enterprise": "Scale message"}
+        save_config(config)
+
+        loaded = load_config()
+        assert loaded.seller_profile.target_verticals == ["fintech", "healthcare"]
+        assert loaded.seller_profile.value_metrics == ["40% faster deploys"]
+        assert loaded.seller_profile.competitive_counters == {"Competitor": ["Lower cost"]}
+        assert loaded.seller_profile.company_size_messaging == {"enterprise": "Scale message"}
+
+    def test_backward_compat_without_context_fields(self, tmp_config_dir: Path) -> None:
+        """Old configs without seller context fields load with empty defaults."""
+        config_file = tmp_config_dir / "config.json"
+        old_config = {
+            "seller_profile": {
+                "company_name": "OldCo",
+                "portfolio_summary": "Tools",
+                "portfolio_items": [],
+            },
+            "api_keys": {},
+            "session_budget": {},
+        }
+        config_file.write_text(json.dumps(old_config), encoding="utf-8")
+        config = load_config()
+        assert config.seller_profile.target_verticals == []
+        assert config.seller_profile.competitive_counters == {}

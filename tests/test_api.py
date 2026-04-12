@@ -183,6 +183,31 @@ class TestSettingsEndpoints:
         assert resp.status_code == 422
         assert "intelligence" in resp.json()["detail"].lower()
 
+    async def test_get_seller_context_defaults(self, client) -> None:
+        resp = await client.get("/settings/seller-context")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["target_verticals"] == []
+        assert data["value_metrics"] == []
+        assert data["competitive_counters"] == {}
+        assert data["company_size_messaging"] == {}
+
+    async def test_put_seller_context(self, client) -> None:
+        resp = await client.put("/settings/seller-context", json={
+            "target_verticals": ["fintech", "healthcare"],
+            "value_metrics": ["40% faster deploys"],
+            "competitive_counters": {"Competitor": ["Lower cost"]},
+            "company_size_messaging": {"enterprise": "Scale message"},
+        })
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "saved"
+
+        # Verify persistence
+        resp2 = await client.get("/settings/seller-context")
+        data = resp2.json()
+        assert data["target_verticals"] == ["fintech", "healthcare"]
+        assert data["value_metrics"] == ["40% faster deploys"]
+
     async def test_patch_capability_intelligence(self, client) -> None:
         # Create a capability entry first
         await client.post("/settings/capability-map/entries", json={

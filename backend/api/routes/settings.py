@@ -62,6 +62,40 @@ async def update_seller_profile(body: SellerProfileBody) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Seller Context (additional fields)
+# ---------------------------------------------------------------------------
+
+
+class SellerContextBody(BaseModel):
+    target_verticals: list[str] = Field(default_factory=list)
+    value_metrics: list[str] = Field(default_factory=list)
+    competitive_counters: dict[str, list[str]] = Field(default_factory=dict)
+    company_size_messaging: dict[str, str] = Field(default_factory=dict)
+
+
+@router.get("/seller-context")
+async def get_seller_context() -> dict:
+    config = load_config()
+    return {
+        "target_verticals": config.seller_profile.target_verticals,
+        "value_metrics": config.seller_profile.value_metrics,
+        "competitive_counters": config.seller_profile.competitive_counters,
+        "company_size_messaging": config.seller_profile.company_size_messaging,
+    }
+
+
+@router.put("/seller-context")
+async def update_seller_context(body: SellerContextBody) -> dict:
+    config = load_config()
+    config.seller_profile.target_verticals = body.target_verticals
+    config.seller_profile.value_metrics = body.value_metrics
+    config.seller_profile.competitive_counters = body.competitive_counters
+    config.seller_profile.company_size_messaging = body.company_size_messaging
+    save_config(config)
+    return {"status": "saved"}
+
+
+# ---------------------------------------------------------------------------
 # Seller Intelligence Extraction
 # ---------------------------------------------------------------------------
 

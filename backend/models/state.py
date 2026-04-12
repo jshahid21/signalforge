@@ -146,6 +146,10 @@ class SellerProfile(TypedDict):
     portfolio_items: List[str]
     website_url: NotRequired[Optional[str]]
     seller_intelligence: NotRequired[SellerIntelligenceDict]
+    target_verticals: NotRequired[List[str]]
+    value_metrics: NotRequired[List[str]]
+    competitive_counters: NotRequired[Dict[str, List[str]]]
+    company_size_messaging: NotRequired[Dict[str, str]]
 
 
 # ---------------------------------------------------------------------------

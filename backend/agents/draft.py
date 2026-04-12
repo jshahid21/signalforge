@@ -186,6 +186,17 @@ def _build_draft_system_prompt(
         )
         if intelligence_section:
             parts.append(intelligence_section)
+
+        # Inject value metrics if available
+        value_metrics = seller_profile.get("value_metrics", [])
+        if value_metrics:
+            metrics_list = "\n".join(f"  - {m}" for m in value_metrics[:3])
+            parts.append(f"\n\nValue metrics (use when credibility is needed):\n{metrics_list}")
+
+        # Note target vertical alignment if available
+        target_verticals = seller_profile.get("target_verticals", [])
+        if target_verticals:
+            parts.append(f"\n\nSeller's target verticals: {', '.join(target_verticals)}")
     else:
         parts.append("\n\nNo seller profile — write in vendor-agnostic terms.")
 
