@@ -20,7 +20,7 @@ _SUBPAGE_PATTERNS = (
 _MAX_DISCOVERED_LINKS = 9
 
 
-def _strip_html_tags(html: str) -> str:
+def strip_html_tags(html: str) -> str:
     """Remove HTML tags and collapse whitespace. Not a full parser — best-effort."""
     html = re.sub(r"<script[^>]*>.*?</script>", " ", html, flags=re.DOTALL | re.IGNORECASE)
     html = re.sub(r"<style[^>]*>.*?</style>", " ", html, flags=re.DOTALL | re.IGNORECASE)
@@ -37,7 +37,7 @@ async def fetch_html(url: str, timeout: float = _DEFAULT_TIMEOUT) -> str:
         async with httpx.AsyncClient(follow_redirects=True, timeout=timeout) as client:
             response = await client.get(
                 url,
-                headers={"User-Agent": "SignalForge/1.0 (seller-intelligence)"},
+                headers={"User-Agent": "SignalForge/1.0"},
             )
             response.raise_for_status()
             return response.text
@@ -99,5 +99,5 @@ async def crawl_url(url: str, timeout: float = _DEFAULT_TIMEOUT) -> str:
     if not html:
         return ""
 
-    text = _strip_html_tags(html)
+    text = strip_html_tags(html)
     return text[:_MAX_CONTENT_LENGTH]

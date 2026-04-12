@@ -4,7 +4,7 @@ from __future__ import annotations
 import pytest
 
 from backend.tools.web_crawler import (
-    _strip_html_tags,
+    strip_html_tags,
     extract_links,
     fetch_html,
     crawl_url,
@@ -106,15 +106,15 @@ class TestExtractLinks:
 
 class TestStripHtmlTags:
     def test_strips_basic_tags(self) -> None:
-        assert _strip_html_tags("<p>Hello</p>") == "Hello"
+        assert strip_html_tags("<p>Hello</p>") == "Hello"
 
     def test_strips_scripts_and_styles(self) -> None:
         html = "<script>alert('x')</script><style>.foo{}</style><p>Content</p>"
-        assert _strip_html_tags(html) == "Content"
+        assert strip_html_tags(html) == "Content"
 
     def test_collapses_whitespace(self) -> None:
         html = "<p>Hello</p>   <p>World</p>"
-        assert _strip_html_tags(html) == "Hello World"
+        assert strip_html_tags(html) == "Hello World"
 
 
 # ---------------------------------------------------------------------------

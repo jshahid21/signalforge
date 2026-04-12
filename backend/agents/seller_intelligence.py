@@ -25,7 +25,7 @@ from backend.config.loader import (
     save_config,
 )
 from backend.tools.web_crawler import (
-    _strip_html_tags,
+    strip_html_tags,
     crawl_url,
     extract_links,
     fetch_html,
@@ -199,7 +199,7 @@ async def extract_seller_intelligence(
     subpage_urls = extract_links(homepage_html, url)
 
     # Convert homepage HTML to text
-    homepage_text = _strip_html_tags(homepage_html)[:50_000]
+    homepage_text = strip_html_tags(homepage_html)[:50_000]
 
     # Crawl discovered subpages
     page_texts = [homepage_text]

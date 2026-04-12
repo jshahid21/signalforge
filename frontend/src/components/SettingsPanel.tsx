@@ -108,7 +108,7 @@ function SellerProfileTab() {
       </div>
 
       {/* Seller Intelligence Section */}
-      {intelligence && (intelligence.differentiators?.length > 0 || intelligence.sales_plays?.length > 0 || intelligence.proof_points?.length > 0 || intelligence.competitive_positioning?.length > 0) && (
+      {intelligence && (
         <div className="border border-gray-200 rounded-md p-4 space-y-3">
           <div className="flex items-center justify-between">
             <h3 className="text-sm font-semibold text-gray-800">Seller Intelligence</h3>
@@ -171,6 +171,10 @@ function SellerProfileTab() {
                 rows={Math.min(intelligence.competitive_positioning.length + 1, 4)}
                 className="w-full rounded border border-gray-200 px-2 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500" />
             </div>
+          )}
+
+          {!intelligence.differentiators?.length && !intelligence.sales_plays?.length && !intelligence.proof_points?.length && !intelligence.competitive_positioning?.length && (
+            <p className="text-sm text-gray-400">No intelligence extracted yet. Enter a website URL above and click Re-scrape.</p>
           )}
         </div>
       )}

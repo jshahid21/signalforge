@@ -51,15 +51,6 @@ export function SetupWizard({ onComplete }: Props) {
         portfolio_items: portfolioItems.split('\n').map(s => s.trim()).filter(Boolean),
         ...(url ? { website_url: url } : {}),
       })
-      // Trigger intelligence extraction in background if URL provided
-      if (url) {
-        setExtracting(true)
-        setExtractionStatus('Extracting seller intelligence from website...')
-        settingsApi.extractSellerIntelligence({ website_url: url })
-          .then(() => setExtractionStatus('Seller intelligence extracted successfully!'))
-          .catch(() => setExtractionStatus('Could not extract intelligence — you can retry from Settings later.'))
-          .finally(() => setExtracting(false))
-      }
       setStep('api-keys')
     } catch (e) {
       setError(String(e))
@@ -72,6 +63,16 @@ export function SetupWizard({ onComplete }: Props) {
     setSaving(true); setError(null)
     try {
       await settingsApi.putApiKeys({ jsearch, tavily, llm_provider: llmProvider, llm_model: llmModel })
+      // Trigger intelligence extraction after API keys saved (LLM now available)
+      const url = websiteUrl.trim()
+      if (url) {
+        setExtracting(true)
+        setExtractionStatus('Extracting seller intelligence from website...')
+        settingsApi.extractSellerIntelligence({ website_url: url })
+          .then(() => setExtractionStatus('Seller intelligence extracted successfully!'))
+          .catch(() => setExtractionStatus('Could not extract intelligence — you can retry from Settings later.'))
+          .finally(() => setExtracting(false))
+      }
       setStep('capability-map')
     } catch (e) {
       setError(String(e))
@@ -141,6 +142,14 @@ export function SetupWizard({ onComplete }: Props) {
           </div>
         )}
 
+        {/* Extraction status — persists across steps */}
+        {extractionStatus && (
+          <div className={`mb-4 rounded-md px-3 py-2 text-sm ${extracting ? 'bg-blue-50 text-blue-700 border border-blue-200' : extractionStatus.includes('success') ? 'bg-green-50 text-green-700 border border-green-200' : 'bg-yellow-50 text-yellow-700 border border-yellow-200'}`}>
+            {extracting && <span className="inline-block animate-spin mr-2">&#9696;</span>}
+            {extractionStatus}
+          </div>
+        )}
+
         {/* ── Step 1: Seller Profile ── */}
         {step === 'seller-profile' && (
           <div className="space-y-4">
@@ -173,12 +182,6 @@ export function SetupWizard({ onComplete }: Props) {
                 We'll extract differentiators, sales plays, and proof points from your website.
               </p>
             </div>
-            {extractionStatus && (
-              <div className={`rounded-md px-3 py-2 text-sm ${extracting ? 'bg-blue-50 text-blue-700 border border-blue-200' : extractionStatus.includes('success') ? 'bg-green-50 text-green-700 border border-green-200' : 'bg-yellow-50 text-yellow-700 border border-yellow-200'}`}>
-                {extracting && <span className="inline-block animate-spin mr-2">&#9696;</span>}
-                {extractionStatus}
-              </div>
-            )}
             <button onClick={() => void saveSellerProfile()} disabled={saving}
               className="w-full rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50">
               {saving ? 'Saving…' : 'Next →'}
