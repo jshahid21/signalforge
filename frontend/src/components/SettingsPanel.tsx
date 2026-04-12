@@ -1,8 +1,8 @@
 /**
  * Settings panel — tabs: Seller Profile, API Keys, Session Budget, Memory Store, Capability Map.
  */
-import { useEffect, useState } from 'react'
-import type { CapabilityMapEntry } from '../api/client'
+import React, { useEffect, useState } from 'react'
+import type { CapabilityMapEntry, SalesPlayEntry, ProofPointEntry } from '../api/client'
 import { memoryApi, settingsApi } from '../api/client'
 
 type Tab = 'seller-profile' | 'api-keys' | 'session-budget' | 'langsmith' | 'memory' | 'capability-map'
@@ -375,6 +375,67 @@ function MemoryTab() {
   )
 }
 
+// ── Capability Intelligence Editor ─────────────────────────────────────────
+
+function CapabilityIntelligenceEditor({
+  entry,
+  onSave,
+}: {
+  entry: CapabilityMapEntry
+  onSave: (entryId: string, data: { differentiators?: string[]; sales_plays?: SalesPlayEntry[]; proof_points?: ProofPointEntry[] }) => Promise<void>
+}) {
+  const [diffs, setDiffs] = useState((entry.differentiators ?? []).join('\n'))
+  const [plays, setPlays] = useState(
+    (entry.sales_plays ?? []).map(sp => `${sp.play} | ${sp.category}`).join('\n')
+  )
+  const [proofs, setProofs] = useState(
+    (entry.proof_points ?? []).map(pp => `${pp.customer} | ${pp.summary}`).join('\n')
+  )
+  const [saving, setSaving] = useState(false)
+
+  async function save() {
+    setSaving(true)
+    try {
+      const differentiators = diffs.split('\n').map(s => s.trim()).filter(Boolean)
+      const sales_plays: SalesPlayEntry[] = plays.split('\n').map(s => s.trim()).filter(Boolean).map(line => {
+        const [play, category] = line.split('|').map(p => p.trim())
+        return { play: play || line, category: category || 'general' }
+      })
+      const proof_points: ProofPointEntry[] = proofs.split('\n').map(s => s.trim()).filter(Boolean).map(line => {
+        const [customer, summary] = line.split('|').map(p => p.trim())
+        return { customer: customer || '', summary: summary || line }
+      })
+      await onSave(entry.id, { differentiators, sales_plays, proof_points })
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="space-y-3 text-xs">
+      <div>
+        <label className="block font-medium text-gray-600 mb-1">Differentiators (one per line)</label>
+        <textarea value={diffs} onChange={e => setDiffs(e.target.value)} rows={2}
+          className="w-full rounded border border-gray-300 px-2 py-1 text-xs focus:ring-1 focus:ring-blue-500" />
+      </div>
+      <div>
+        <label className="block font-medium text-gray-600 mb-1">Sales Plays (format: play | category, one per line)</label>
+        <textarea value={plays} onChange={e => setPlays(e.target.value)} rows={2}
+          className="w-full rounded border border-gray-300 px-2 py-1 text-xs focus:ring-1 focus:ring-blue-500" />
+      </div>
+      <div>
+        <label className="block font-medium text-gray-600 mb-1">Proof Points (format: customer | summary, one per line)</label>
+        <textarea value={proofs} onChange={e => setProofs(e.target.value)} rows={2}
+          className="w-full rounded border border-gray-300 px-2 py-1 text-xs focus:ring-1 focus:ring-blue-500" />
+      </div>
+      <button onClick={() => void save()} disabled={saving}
+        className="px-3 py-1 text-xs bg-gray-800 text-white rounded hover:bg-gray-700 disabled:opacity-50">
+        {saving ? 'Saving...' : 'Save Intelligence'}
+      </button>
+    </div>
+  )
+}
+
 // ── Capability Map Tab ─────────────────────────────────────────────────────
 
 function CapabilityMapTab() {
@@ -386,6 +447,9 @@ function CapabilityMapTab() {
   const [newId, setNewId] = useState('')
   const [newLabel, setNewLabel] = useState('')
   const [newSignals, setNewSignals] = useState('')
+  const [expandedEntry, setExpandedEntry] = useState<string | null>(null)
+  const [autoLinking, setAutoLinking] = useState(false)
+  const [autoLinkResult, setAutoLinkResult] = useState<string | null>(null)
 
   useEffect(() => {
     settingsApi.getCapabilityMap().then(setEntries).catch(() => {})
@@ -421,6 +485,28 @@ function CapabilityMapTab() {
     setEntries(prev => prev.filter(e => e.id !== id))
   }
 
+  async function triggerAutoLink() {
+    setAutoLinking(true)
+    setAutoLinkResult(null)
+    try {
+      const result = await settingsApi.autoLinkIntelligence()
+      setAutoLinkResult(`Linked intelligence to ${result.entries_updated} entries`)
+      const d = await settingsApi.getCapabilityMap()
+      setEntries(d)
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Auto-link failed'
+      setAutoLinkResult(msg)
+    } finally {
+      setAutoLinking(false)
+    }
+  }
+
+  async function saveIntelligence(entryId: string, data: { differentiators?: string[]; sales_plays?: Array<{ play: string; category: string }>; proof_points?: Array<{ customer: string; summary: string }> }) {
+    await settingsApi.patchCapabilityIntelligence(entryId, data)
+    const d = await settingsApi.getCapabilityMap()
+    setEntries(d)
+  }
+
   return (
     <div className="space-y-4">
       <div>
@@ -442,6 +528,17 @@ function CapabilityMapTab() {
         </button>
       </div>
 
+      {/* Auto-link button */}
+      {entries.length > 0 && (
+        <div className="flex items-center gap-3">
+          <button onClick={() => void triggerAutoLink()} disabled={autoLinking}
+            className="rounded-md bg-indigo-600 px-3 py-1.5 text-sm text-white hover:bg-indigo-700 disabled:opacity-50">
+            {autoLinking ? 'Auto-linking...' : 'Auto-Link Intelligence'}
+          </button>
+          {autoLinkResult && <span className="text-xs text-gray-500">{autoLinkResult}</span>}
+        </div>
+      )}
+
       {/* Entry list */}
       {entries.length > 0 && (
         <div className="border border-gray-200 rounded-md overflow-hidden">
@@ -450,22 +547,42 @@ function CapabilityMapTab() {
               <tr>
                 <th className="px-3 py-2 text-left text-xs font-medium text-gray-500">Category</th>
                 <th className="px-3 py-2 text-left text-xs font-medium text-gray-500">Problem Signals</th>
+                <th className="px-3 py-2 text-left text-xs font-medium text-gray-500">Intelligence</th>
                 <th className="px-3 py-2 w-16" />
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
-              {entries.map(e => (
-                <tr key={e.id}>
-                  <td className="px-3 py-2 font-medium">{e.label}</td>
-                  <td className="px-3 py-2 text-gray-600 text-xs">{e.problem_signals.join(', ')}</td>
-                  <td className="px-3 py-2 text-right">
-                    <button onClick={() => void deleteEntry(e.id)}
-                      className="text-xs text-red-500 hover:underline" aria-label={`Delete ${e.label}`}>
-                      Delete
-                    </button>
-                  </td>
-                </tr>
-              ))}
+              {entries.map(e => {
+                const hasIntel = (e.differentiators?.length ?? 0) > 0 || (e.sales_plays?.length ?? 0) > 0 || (e.proof_points?.length ?? 0) > 0
+                const isExpanded = expandedEntry === e.id
+                return (
+                  <React.Fragment key={e.id}>
+                    <tr>
+                      <td className="px-3 py-2 font-medium">{e.label}</td>
+                      <td className="px-3 py-2 text-gray-600 text-xs">{e.problem_signals.join(', ')}</td>
+                      <td className="px-3 py-2">
+                        <button onClick={() => setExpandedEntry(isExpanded ? null : e.id)}
+                          className="text-xs text-blue-600 hover:underline">
+                          {hasIntel ? `${(e.differentiators?.length ?? 0) + (e.sales_plays?.length ?? 0) + (e.proof_points?.length ?? 0)} items` : 'none'} {isExpanded ? '[-]' : '[+]'}
+                        </button>
+                      </td>
+                      <td className="px-3 py-2 text-right">
+                        <button onClick={() => void deleteEntry(e.id)}
+                          className="text-xs text-red-500 hover:underline" aria-label={`Delete ${e.label}`}>
+                          Delete
+                        </button>
+                      </td>
+                    </tr>
+                    {isExpanded && (
+                      <tr>
+                        <td colSpan={4} className="px-3 py-3 bg-gray-50">
+                          <CapabilityIntelligenceEditor entry={e} onSave={saveIntelligence} />
+                        </td>
+                      </tr>
+                    )}
+                  </React.Fragment>
+                )
+              })}
             </tbody>
           </table>
         </div>

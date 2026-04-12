@@ -274,6 +274,36 @@ async def update_langsmith(body: LangSmithBody) -> dict:
 # ---------------------------------------------------------------------------
 
 
+class CapabilityIntelligenceBody(BaseModel):
+    differentiators: Optional[list[str]] = None
+    sales_plays: Optional[list[dict]] = None
+    proof_points: Optional[list[dict]] = None
+
+
+@router.patch("/capability-map/{entry_id}/intelligence")
+async def update_capability_intelligence(entry_id: str, body: CapabilityIntelligenceBody) -> dict:
+    """Update seller intelligence fields for a specific capability map entry."""
+    from backend.config.capability_map import load_capability_map, save_capability_map
+
+    cap_map = load_capability_map()
+    if cap_map is None:
+        raise HTTPException(status_code=404, detail="Capability map not found")
+
+    entry = next((e for e in cap_map.entries if e.id == entry_id), None)
+    if entry is None:
+        raise HTTPException(status_code=404, detail=f"Entry '{entry_id}' not found")
+
+    if body.differentiators is not None:
+        entry.differentiators = body.differentiators
+    if body.sales_plays is not None:
+        entry.sales_plays = body.sales_plays
+    if body.proof_points is not None:
+        entry.proof_points = body.proof_points
+
+    save_capability_map(cap_map)
+    return {"status": "updated", "entry": entry.as_dict()}
+
+
 class CapabilityMapRequest(BaseModel):
     # Frontend sends newline-separated text for product_list; allow list for API clients
     product_list: str | list[str] | None = None

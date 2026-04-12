@@ -183,6 +183,31 @@ class TestSettingsEndpoints:
         assert resp.status_code == 422
         assert "intelligence" in resp.json()["detail"].lower()
 
+    async def test_patch_capability_intelligence(self, client) -> None:
+        # Create a capability entry first
+        await client.post("/settings/capability-map/entries", json={
+            "id": "test_cap",
+            "label": "Test Cap",
+            "problem_signals": ["test"],
+            "solution_areas": ["Test Area"],
+        })
+        # Patch intelligence
+        resp = await client.patch("/settings/capability-map/test_cap/intelligence", json={
+            "differentiators": ["Best in class"],
+            "sales_plays": [{"play": "Scale play", "category": "infra"}],
+        })
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "updated"
+        assert data["entry"]["differentiators"] == ["Best in class"]
+        assert len(data["entry"]["sales_plays"]) == 1
+
+    async def test_patch_capability_intelligence_not_found(self, client) -> None:
+        resp = await client.patch("/settings/capability-map/nonexistent/intelligence", json={
+            "differentiators": ["Test"],
+        })
+        assert resp.status_code == 404
+
     async def test_auto_link_rejects_without_llm_model(self, client) -> None:
         # Create capability map
         await client.post("/settings/capability-map/entries", json={
