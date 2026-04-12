@@ -74,10 +74,10 @@ def _validate_url(url: str) -> str:
 
 
 def _build_extraction_prompt(combined_text: str) -> str:
-    """Build the LLM prompt for extracting seller intelligence from website content."""
-    return f"""You are analyzing a B2B seller's public website to extract structured sales intelligence.
+    """Build the LLM prompt for extracting seller intelligence from sales collateral."""
+    return f"""You are analyzing B2B sales collateral (which may include website content, pitch decks, case studies, battlecards, or other sales materials) to extract structured sales intelligence.
 
-Website content:
+Content:
 {combined_text[:_MAX_COMBINED_TEXT]}
 
 Extract the following four categories of intelligence from this website content.
@@ -248,23 +248,84 @@ async def extract_seller_intelligence(
     return intelligence
 
 
+@traceable(name="extract_seller_intelligence_from_text")
+async def extract_seller_intelligence_from_text(
+    text: str,
+    llm_provider: str,
+    llm_model: str,
+) -> SellerIntelligence:
+    """Extract structured intelligence from pre-extracted text (documents or paste).
+
+    Uses the same LLM extraction pipeline as website scraping but skips crawling.
+
+    Args:
+        text: Plain text content from documents or paste
+        llm_provider: LLM provider name
+        llm_model: LLM model identifier
+
+    Returns:
+        SellerIntelligence with extracted data
+
+    Raises:
+        ValueError: If text is empty
+        RuntimeError: If LLM extraction fails
+    """
+    if not text or not text.strip():
+        raise ValueError("No text content provided for extraction.")
+
+    combined_text = text[:_MAX_COMBINED_TEXT]
+    prompt = _build_extraction_prompt(combined_text)
+    route = _normalized_llm_provider(llm_provider)
+
+    if route == "openai":
+        if ChatOpenAI is None:
+            raise RuntimeError("langchain-openai not installed")
+        llm = ChatOpenAI(model=llm_model.strip().lower(), max_tokens=2000, temperature=0)
+    else:
+        if ChatAnthropic is None:
+            raise RuntimeError("langchain-anthropic not installed")
+        llm = ChatAnthropic(model=llm_model.strip(), max_tokens=2000, temperature=0)
+
+    try:
+        response = await llm.ainvoke([HumanMessage(content=prompt)])
+        raw_text = _stringify_llm_content(response.content)
+    except Exception as exc:
+        raise RuntimeError(f"LLM extraction call failed: {exc}") from exc
+
+    intelligence = _parse_extraction_response(raw_text)
+    if intelligence is None:
+        raise RuntimeError(
+            "LLM returned unparseable response. The content may not contain "
+            "enough structured information for extraction."
+        )
+
+    return intelligence
+
+
 async def extract_and_save_seller_intelligence(
     website_url: str | None = None,
+    text: str | None = None,
 ) -> SellerIntelligence:
     """Extract seller intelligence and save to config.
 
-    If website_url is not provided, uses the URL from the existing config.
+    Provide ``website_url`` for URL-based extraction, ``text`` for text-based
+    extraction (from files or paste), or neither to use the URL from config.
 
     Returns the extracted SellerIntelligence.
     """
     config = load_config()
 
-    url = website_url or config.seller_profile.website_url
-    if not url:
-        raise ValueError(
-            "No website URL provided and none configured in seller profile. "
-            "Please provide a website URL."
-        )
+    # Determine source — text takes priority, then explicit URL, then config URL
+    if text:
+        source = "text"
+    else:
+        url = website_url or config.seller_profile.website_url
+        if not url:
+            raise ValueError(
+                "No website URL provided and none configured in seller profile. "
+                "Please provide a website URL."
+            )
+        source = "url"
 
     llm_provider = config.api_keys.llm_provider
     llm_model = config.api_keys.llm_model
@@ -273,7 +334,10 @@ async def extract_and_save_seller_intelligence(
             "LLM model is not configured. Open Settings → API Keys and set the LLM provider and model."
         )
 
-    intelligence = await extract_seller_intelligence(url, llm_provider, llm_model)
+    if source == "text":
+        intelligence = await extract_seller_intelligence_from_text(text, llm_provider, llm_model)
+    else:
+        intelligence = await extract_seller_intelligence(url, llm_provider, llm_model)
 
     # Save to config
     if website_url:
