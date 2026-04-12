@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
 from backend.config.loader import (
@@ -102,20 +102,106 @@ async def update_seller_context(body: SellerContextBody) -> dict:
 
 class ExtractIntelligenceRequest(BaseModel):
     website_url: Optional[str] = None
+    text: Optional[str] = None
 
 
 @router.post("/seller-intelligence/extract")
 async def extract_seller_intelligence(body: ExtractIntelligenceRequest) -> dict:
-    """Extract seller intelligence from website. Saves to config on success."""
+    """Extract seller intelligence from website URL or pasted text.
+
+    Provide exactly one of ``website_url`` or ``text``.
+    """
     from backend.agents.seller_intelligence import extract_and_save_seller_intelligence
+
+    if body.website_url and body.text:
+        raise HTTPException(
+            status_code=422,
+            detail="Provide either website_url or text, not both.",
+        )
 
     try:
         intelligence = await extract_and_save_seller_intelligence(
             website_url=body.website_url,
+            text=body.text,
         )
+        source_type = "text" if body.text else "url"
         return {
             "status": "extracted",
             "seller_intelligence": intelligence.model_dump(),
+            "source_type": source_type,
+        }
+    except ValueError as exc:
+        detail = str(exc)
+        # Friendly message for 403 / crawler-blocked errors
+        if "blocking" in detail.lower() or "403" in detail or "could not fetch" in detail.lower():
+            detail = (
+                "Your website blocked our crawler (common for enterprise sites). "
+                "Try uploading a pitch deck or case study PDF instead."
+            )
+        raise HTTPException(status_code=422, detail=detail)
+    except RuntimeError as exc:
+        detail = str(exc)
+        if "could not fetch" in detail.lower() or "unreachable" in detail.lower():
+            detail = (
+                "Your website blocked our crawler (common for enterprise sites). "
+                "Try uploading a pitch deck or case study PDF instead."
+            )
+        raise HTTPException(status_code=502, detail=detail)
+
+
+@router.post("/seller-intelligence/extract-from-files")
+async def extract_from_files(files: list[UploadFile]) -> dict:
+    """Extract seller intelligence from uploaded files (PDF, DOCX, PPTX, XLSX, HTML, TXT).
+
+    Accepts multipart file upload. Max 5 files, 10 MB each.
+    """
+    from backend.agents.seller_intelligence import extract_and_save_seller_intelligence
+    from backend.tools.document_parser import (
+        ALLOWED_EXTENSIONS,
+        MAX_FILE_SIZE,
+        MAX_FILES,
+        extract_text_from_files,
+    )
+    from pathlib import PurePath
+
+    if len(files) > MAX_FILES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Too many files. Maximum {MAX_FILES} files allowed.",
+        )
+
+    if not files:
+        raise HTTPException(status_code=422, detail="No files provided.")
+
+    file_data: list[tuple[bytes, str]] = []
+    for f in files:
+        ext = PurePath(f.filename or "").suffix.lower()
+        if ext not in ALLOWED_EXTENSIONS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unsupported file type '{ext}'. Accepted: PDF, DOCX, PPTX, XLSX, HTML, TXT",
+            )
+        content = await f.read()
+        if len(content) > MAX_FILE_SIZE:
+            raise HTTPException(
+                status_code=413,
+                detail=f"File too large: '{f.filename}'. Maximum 10MB per file.",
+            )
+        file_data.append((content, f.filename or "unknown"))
+
+    combined_text = extract_text_from_files(file_data)
+    if not combined_text.strip():
+        raise HTTPException(
+            status_code=422,
+            detail="No text could be extracted from the uploaded files.",
+        )
+
+    try:
+        intelligence = await extract_and_save_seller_intelligence(text=combined_text)
+        return {
+            "status": "extracted",
+            "seller_intelligence": intelligence.model_dump(),
+            "source_type": "files",
         }
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))

@@ -24,7 +24,7 @@ signalforge/
 │   │   ├── hitl_gate.py     # LangGraph interrupt/resume node for persona selection
 │   │   ├── synthesis.py     # Per-persona buyer insight synthesis
 │   │   ├── draft.py         # Per-persona outreach draft generation with few-shot + seller intelligence
-│   │   ├── seller_intelligence.py  # Website scrape → LLM extraction of differentiators, sales plays, proof points
+│   │   ├── seller_intelligence.py  # Multi-source (URL/files/text) → LLM extraction of differentiators, sales plays, proof points
 │   │   ├── memory_agent.py  # SQLite-backed approved draft retrieval
 │   │   └── capability_map_generator.py  # URL crawl → capability map entries
 │   ├── api/
@@ -43,7 +43,8 @@ signalforge/
 │   └── tools/
 │       ├── jsearch.py       # JSearchClient (Tier 1 job posting search)
 │       ├── tavily.py        # TavilySearchClient (Tier 2 web search)
-│       └── web_crawler.py   # URL crawl + link discovery for capability map and seller intelligence
+│       ├── web_crawler.py   # URL crawl + link discovery for capability map and seller intelligence
+│       └── document_parser.py  # Multi-format text extraction (PDF/DOCX/PPTX/XLSX/HTML/TXT)
 ├── frontend/
 │   ├── src/
 │   │   ├── App.tsx          # Root component: session start, company/pipeline state

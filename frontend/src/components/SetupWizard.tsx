@@ -1,55 +1,84 @@
 /**
- * First-run setup wizard — seller profile + API keys + capability map.
- * Three steps: Seller Profile → API Keys → Capability Map.
+ * First-run setup wizard — simplified to two steps.
+ * Step 1: About You (company + products + intelligence source)
+ * Step 2: API Keys
+ * After Step 2: auto-generate capability map + extract intelligence + auto-link.
  */
-import { useState } from 'react'
+import { useState, useRef } from 'react'
 import { setupApi, settingsApi } from '../api/client'
 
-type Step = 'seller-profile' | 'api-keys' | 'capability-map' | 'done'
-type GenMode = 'product_list' | 'product_url' | 'territory_text'
+type Step = 'about-you' | 'api-keys'
+type IntelSource = 'none' | 'url' | 'files' | 'text'
+
+const MAX_FILE_SIZE = 10 * 1024 * 1024 // 10 MB
+const MAX_FILES = 5
+const ACCEPTED_EXTENSIONS = '.pdf,.docx,.pptx,.xlsx,.html,.htm,.txt'
 
 interface Props {
   onComplete: () => void
 }
 
 export function SetupWizard({ onComplete }: Props) {
-  const [step, setStep] = useState<Step>('seller-profile')
+  const [step, setStep] = useState<Step>('about-you')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  // Seller profile fields
+  // Step 1 fields
   const [companyName, setCompanyName] = useState('')
-  const [portfolioSummary, setPortfolioSummary] = useState('')
   const [portfolioItems, setPortfolioItems] = useState('')
+  const [intelSource, setIntelSource] = useState<IntelSource>('none')
   const [websiteUrl, setWebsiteUrl] = useState('')
-  const [extracting, setExtracting] = useState(false)
-  const [extractionStatus, setExtractionStatus] = useState<string | null>(null)
+  const [pasteText, setPasteText] = useState('')
+  const [selectedFiles, setSelectedFiles] = useState<File[]>([])
+  const fileInputRef = useRef<HTMLInputElement>(null)
 
-  // API key fields
+  // Step 2 fields
   const [jsearch, setJsearch] = useState('')
   const [tavily, setTavily] = useState('')
   const [llmProvider, setLlmProvider] = useState('anthropic')
   const [llmModel, setLlmModel] = useState('claude-sonnet-4-6')
 
-  // Capability map fields
-  const [genMode, setGenMode] = useState<GenMode>('product_list')
-  const [genInput, setGenInput] = useState('')
-  const [generating, setGenerating] = useState(false)
-  const [capGenerated, setCapGenerated] = useState(false)
+  // Post-setup orchestration state
+  const [orchestrating, setOrchestrating] = useState(false)
+  const [orchestrationStatus, setOrchestrationStatus] = useState<string | null>(null)
 
-  async function saveSellerProfile() {
-    if (!companyName.trim()) { setError('Company name is required'); return }
-    const url = websiteUrl.trim()
-    if (url && !url.startsWith('https://')) {
-      setError('Website URL must start with https://'); return
+  function handleFileSelect(e: React.ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(e.target.files || [])
+    // Client-side validation
+    if (files.length > MAX_FILES) {
+      setError(`Maximum ${MAX_FILES} files allowed.`)
+      return
     }
+    const oversized = files.find(f => f.size > MAX_FILE_SIZE)
+    if (oversized) {
+      setError(`File "${oversized.name}" exceeds 10MB limit.`)
+      return
+    }
+    setError(null)
+    setSelectedFiles(files)
+  }
+
+  async function saveAboutYou() {
+    if (!companyName.trim()) { setError('Company name is required'); return }
+    if (intelSource === 'url') {
+      const url = websiteUrl.trim()
+      if (!url) { setError('Please enter a website URL or select a different source'); return }
+      if (!url.startsWith('https://')) { setError('Website URL must start with https://'); return }
+    }
+    if (intelSource === 'files' && selectedFiles.length === 0) {
+      setError('Please select at least one file or choose a different source'); return
+    }
+    if (intelSource === 'text' && !pasteText.trim()) {
+      setError('Please paste some content or choose a different source'); return
+    }
+
     setSaving(true); setError(null)
     try {
       await settingsApi.putSellerProfile({
         company_name: companyName.trim(),
-        portfolio_summary: portfolioSummary.trim(),
+        portfolio_summary: '',
         portfolio_items: portfolioItems.split('\n').map(s => s.trim()).filter(Boolean),
-        ...(url ? { website_url: url } : {}),
+        ...(intelSource === 'url' && websiteUrl.trim() ? { website_url: websiteUrl.trim() } : {}),
       })
       setStep('api-keys')
     } catch (e) {
@@ -59,59 +88,72 @@ export function SetupWizard({ onComplete }: Props) {
     }
   }
 
-  async function saveApiKeys() {
+  async function saveApiKeysAndFinish() {
     setSaving(true); setError(null)
     try {
       await settingsApi.putApiKeys({ jsearch, tavily, llm_provider: llmProvider, llm_model: llmModel })
-      // Trigger intelligence extraction after API keys saved (LLM now available)
-      const url = websiteUrl.trim()
-      if (url) {
-        setExtracting(true)
-        setExtractionStatus('Extracting seller intelligence from website...')
-        settingsApi.extractSellerIntelligence({ website_url: url })
-          .then(() => setExtractionStatus('Seller intelligence extracted successfully!'))
-          .catch(() => setExtractionStatus('Could not extract intelligence — you can retry from Settings later.'))
-          .finally(() => setExtracting(false))
+    } catch (e) {
+      setError(String(e)); setSaving(false); return
+    }
+    setSaving(false)
+
+    // Begin post-setup orchestration
+    setOrchestrating(true)
+    const products = portfolioItems.split('\n').map(s => s.trim()).filter(Boolean)
+
+    try {
+      // 1. Generate capability map from products
+      if (products.length > 0) {
+        setOrchestrationStatus('Generating capability map from your products...')
+        try {
+          await settingsApi.generateCapabilityMap({ product_list: products.join('\n') })
+        } catch {
+          // Soft failure — continue without capability map
+        }
       }
-      setStep('capability-map')
-    } catch (e) {
-      setError(String(e))
-    } finally {
-      setSaving(false)
-    }
-  }
 
-  async function generateCapabilityMap() {
-    if (!genInput.trim()) { setError('Input is required'); return }
-    setGenerating(true); setError(null)
-    try {
-      await settingsApi.generateCapabilityMap({ [genMode]: genInput.trim() })
-      setCapGenerated(true)
-    } catch (e) {
-      setError(String(e))
-    } finally {
-      setGenerating(false)
-    }
-  }
+      // 2. Extract intelligence from chosen source
+      if (intelSource !== 'none') {
+        setOrchestrationStatus('Extracting seller intelligence...')
+        try {
+          if (intelSource === 'url') {
+            await settingsApi.extractSellerIntelligence({ website_url: websiteUrl.trim() })
+          } else if (intelSource === 'files') {
+            await settingsApi.extractFromFiles(selectedFiles)
+          } else if (intelSource === 'text') {
+            await settingsApi.extractSellerIntelligence({ text: pasteText.trim() })
+          }
 
-  async function completeSetup() {
-    setSaving(true); setError(null)
-    try {
-      // Mark setup as complete by saving a valid config
-      await setupApi.saveConfig({})
+          // 3. Auto-link intelligence to capability map
+          setOrchestrationStatus('Linking intelligence to capabilities...')
+          try {
+            await settingsApi.autoLinkIntelligence()
+          } catch {
+            // Soft failure — linking is optional
+          }
+        } catch (e) {
+          const msg = String(e)
+          if (msg.includes('blocked') || msg.includes('403') || msg.includes('crawler')) {
+            setOrchestrationStatus('Your website blocked our crawler (common for enterprise sites). You can upload files from Settings later.')
+          } else {
+            setOrchestrationStatus('Could not extract intelligence — you can retry from Settings later.')
+          }
+          // Soft failure — continue to complete setup
+        }
+      }
+
+      // 4. Mark setup complete
+      setOrchestrationStatus('Finishing setup...')
+      try { await setupApi.saveConfig({}) } catch { /* proceed anyway */ }
       onComplete()
-    } catch {
-      onComplete() // proceed even if save fails
     } finally {
-      setSaving(false)
+      setOrchestrating(false)
     }
   }
 
   const STEP_LABELS: Record<Step, string> = {
-    'seller-profile': '1. Seller Profile',
+    'about-you': '1. About You',
     'api-keys': '2. API Keys',
-    'capability-map': '3. Capability Map',
-    done: 'Done',
   }
 
   return (
@@ -126,7 +168,7 @@ export function SetupWizard({ onComplete }: Props) {
 
         {/* Step indicator */}
         <div className="flex gap-2 mb-8 text-xs">
-          {(['seller-profile', 'api-keys', 'capability-map'] as const).map(s => (
+          {(['about-you', 'api-keys'] as const).map(s => (
             <div key={s} className={[
               'flex-1 rounded py-1 text-center font-medium',
               step === s ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-400',
@@ -142,47 +184,89 @@ export function SetupWizard({ onComplete }: Props) {
           </div>
         )}
 
-        {/* Extraction status — persists across steps */}
-        {extractionStatus && (
-          <div className={`mb-4 rounded-md px-3 py-2 text-sm ${extracting ? 'bg-blue-50 text-blue-700 border border-blue-200' : extractionStatus.includes('success') ? 'bg-green-50 text-green-700 border border-green-200' : 'bg-yellow-50 text-yellow-700 border border-yellow-200'}`}>
-            {extracting && <span className="inline-block animate-spin mr-2">&#9696;</span>}
-            {extractionStatus}
+        {/* Orchestration status */}
+        {orchestrating && orchestrationStatus && (
+          <div className="mb-4 rounded-md px-3 py-2 text-sm bg-blue-50 text-blue-700 border border-blue-200">
+            <span className="inline-block animate-spin mr-2">&#9696;</span>
+            {orchestrationStatus}
           </div>
         )}
 
-        {/* ── Step 1: Seller Profile ── */}
-        {step === 'seller-profile' && (
+        {/* ── Step 1: About You ── */}
+        {step === 'about-you' && !orchestrating && (
           <div className="space-y-4">
             <div>
-              <label className="block text-sm font-medium text-gray-700">Your Company Name *</label>
+              <label className="block text-sm font-medium text-gray-700">Company Name *</label>
               <input value={companyName} onChange={e => setCompanyName(e.target.value)}
                 placeholder="Acme Corp"
-                className="mt-1 w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700">Portfolio Summary</label>
-              <textarea value={portfolioSummary} onChange={e => setPortfolioSummary(e.target.value)}
-                placeholder="Brief description of what you sell…"
-                rows={3}
                 className="mt-1 w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
             </div>
             <div>
               <label className="block text-sm font-medium text-gray-700">Products / Services (one per line)</label>
               <textarea value={portfolioItems} onChange={e => setPortfolioItems(e.target.value)}
                 placeholder="Kubernetes Optimizer&#10;Cost Analytics&#10;Security Scanner"
-                rows={4}
+                rows={3}
                 className="mt-1 w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
             </div>
+
+            {/* Intelligence source selection */}
             <div>
-              <label className="block text-sm font-medium text-gray-700">Company Website URL (optional)</label>
-              <input value={websiteUrl} onChange={e => setWebsiteUrl(e.target.value)}
-                placeholder="https://www.yourcompany.com"
-                className="mt-1 w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
-              <p className="mt-1 text-xs text-gray-400">
-                We'll extract differentiators, sales plays, and proof points from your website.
-              </p>
+              <label className="block text-sm font-medium text-gray-700 mb-2">Seller Intelligence Source (optional)</label>
+              <div className="flex flex-wrap gap-2">
+                {([
+                  ['none', 'Skip'],
+                  ['url', 'Website URL'],
+                  ['files', 'Upload Files'],
+                  ['text', 'Paste Text'],
+                ] as const).map(([value, label]) => (
+                  <button key={value} type="button" onClick={() => { setIntelSource(value); setError(null) }}
+                    className={`px-3 py-1.5 text-xs rounded border ${
+                      intelSource === value
+                        ? 'bg-blue-600 text-white border-blue-600'
+                        : 'border-gray-300 text-gray-600 hover:bg-gray-50'
+                    }`}>
+                    {label}
+                  </button>
+                ))}
+              </div>
             </div>
-            <button onClick={() => void saveSellerProfile()} disabled={saving}
+
+            {/* Conditional inputs based on source */}
+            {intelSource === 'url' && (
+              <div>
+                <input value={websiteUrl} onChange={e => setWebsiteUrl(e.target.value)}
+                  placeholder="https://www.yourcompany.com"
+                  className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                <p className="mt-1 text-xs text-gray-400">
+                  We'll extract differentiators, sales plays, and proof points from your website.
+                </p>
+              </div>
+            )}
+            {intelSource === 'files' && (
+              <div>
+                <input ref={fileInputRef} type="file" multiple accept={ACCEPTED_EXTENSIONS}
+                  onChange={handleFileSelect}
+                  className="w-full text-sm text-gray-600 file:mr-3 file:py-1.5 file:px-3 file:rounded file:border-0 file:text-sm file:font-medium file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100" />
+                <p className="mt-1 text-xs text-gray-400">
+                  PDF, DOCX, PPTX, XLSX, HTML, TXT — pitch decks, case studies, battlecards (max {MAX_FILES} files, 10MB each)
+                </p>
+                {selectedFiles.length > 0 && (
+                  <p className="mt-1 text-xs text-green-600">
+                    {selectedFiles.length} file{selectedFiles.length > 1 ? 's' : ''} selected
+                  </p>
+                )}
+              </div>
+            )}
+            {intelSource === 'text' && (
+              <div>
+                <textarea value={pasteText} onChange={e => setPasteText(e.target.value)}
+                  placeholder="Paste content from pitch decks, case studies, battlecards…"
+                  rows={4}
+                  className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+              </div>
+            )}
+
+            <button onClick={() => void saveAboutYou()} disabled={saving}
               className="w-full rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50">
               {saving ? 'Saving…' : 'Next →'}
             </button>
@@ -190,7 +274,7 @@ export function SetupWizard({ onComplete }: Props) {
         )}
 
         {/* ── Step 2: API Keys ── */}
-        {step === 'api-keys' && (
+        {step === 'api-keys' && !orchestrating && (
           <div className="space-y-4">
             <p className="text-sm text-gray-600">
               Keys are stored locally in <code>~/.signalforge/config.json</code> and never sent to SignalForge servers.
@@ -209,66 +293,15 @@ export function SetupWizard({ onComplete }: Props) {
               </div>
             ))}
             <div className="flex gap-3">
-              <button onClick={() => setStep('seller-profile')}
+              <button onClick={() => setStep('about-you')}
                 className="flex-1 rounded-md border border-gray-300 px-4 py-2 text-sm text-gray-600 hover:bg-gray-50">
                 ← Back
               </button>
-              <button onClick={() => void saveApiKeys()} disabled={saving}
+              <button onClick={() => void saveApiKeysAndFinish()} disabled={saving}
                 className="flex-1 rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50">
-                {saving ? 'Saving…' : 'Next →'}
+                {saving ? 'Saving…' : 'Finish Setup →'}
               </button>
             </div>
-          </div>
-        )}
-
-        {/* ── Step 3: Capability Map ── */}
-        {step === 'capability-map' && (
-          <div className="space-y-4">
-            <p className="text-sm text-gray-600">
-              Generate a capability map so SignalForge can match signals to your solutions.
-            </p>
-            <div className="flex gap-2">
-              {(['product_list', 'product_url', 'territory_text'] as const).map(m => (
-                <button key={m} onClick={() => setGenMode(m)}
-                  className={`flex-1 px-2 py-1.5 text-xs rounded border ${genMode === m ? 'bg-blue-600 text-white border-blue-600' : 'border-gray-300 text-gray-600'}`}>
-                  {m === 'product_list' ? 'Product List' : m === 'product_url' ? 'Product URL' : 'Territory Text'}
-                </button>
-              ))}
-            </div>
-            <textarea value={genInput} onChange={e => setGenInput(e.target.value)} rows={4}
-              placeholder={
-                genMode === 'product_url' ? 'https://example.com/products' :
-                genMode === 'product_list' ? 'Kubernetes Optimizer\nCost Analytics' :
-                'We focus on cloud cost management for enterprise teams…'
-              }
-              className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
-
-            {capGenerated && (
-              <div className="rounded-md bg-green-50 border border-green-300 px-3 py-2 text-sm text-green-700">
-                ✓ Capability map generated successfully!
-              </div>
-            )}
-
-            <div className="flex gap-3">
-              <button onClick={() => setStep('api-keys')}
-                className="flex-1 rounded-md border border-gray-300 px-4 py-2 text-sm text-gray-600 hover:bg-gray-50">
-                ← Back
-              </button>
-              {!capGenerated ? (
-                <button onClick={() => void generateCapabilityMap()} disabled={generating || !genInput.trim()}
-                  className="flex-1 rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50">
-                  {generating ? 'Generating…' : 'Generate'}
-                </button>
-              ) : (
-                <button onClick={() => void completeSetup()} disabled={saving}
-                  className="flex-1 rounded-md bg-green-600 px-4 py-2 text-sm font-medium text-white hover:bg-green-700 disabled:opacity-50">
-                  {saving ? 'Finishing…' : 'Get Started →'}
-                </button>
-              )}
-            </div>
-            <button onClick={() => void completeSetup()} className="w-full text-sm text-gray-400 hover:text-gray-600">
-              Skip for now
-            </button>
           </div>
         )}
       </div>

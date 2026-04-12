@@ -1,7 +1,7 @@
 /**
  * Settings panel — tabs: Seller Profile, API Keys, Session Budget, Memory Store, Capability Map.
  */
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import type { CapabilityMapEntry, SalesPlayEntry, ProofPointEntry } from '../api/client'
 import { memoryApi, settingsApi } from '../api/client'
 
@@ -28,6 +28,8 @@ interface SellerIntelligenceData {
   last_scraped: string | null
 }
 
+type ExtractSource = 'url' | 'files' | 'text'
+
 function SellerProfileTab() {
   const [companyName, setCompanyName] = useState('')
   const [portfolioSummary, setPortfolioSummary] = useState('')
@@ -37,6 +39,10 @@ function SellerProfileTab() {
   const [saved, setSaved] = useState(false)
   const [extracting, setExtracting] = useState(false)
   const [extractError, setExtractError] = useState<string | null>(null)
+  const [extractSource, setExtractSource] = useState<ExtractSource>('url')
+  const [pasteText, setPasteText] = useState('')
+  const [selectedFiles, setSelectedFiles] = useState<File[]>([])
+  const fileInputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
     settingsApi.getSellerProfile().then((d: Record<string, unknown>) => {
@@ -62,13 +68,22 @@ function SellerProfileTab() {
     setTimeout(() => setSaved(false), 2000)
   }
 
-  async function rescrape() {
-    const url = websiteUrl.trim()
-    if (!url) return
+  async function extractIntelligence() {
     setExtracting(true); setExtractError(null)
     try {
-      const result = await settingsApi.extractSellerIntelligence({ website_url: url })
-      setIntelligence(result.seller_intelligence as SellerIntelligenceData)
+      let result: Record<string, unknown>
+      if (extractSource === 'url') {
+        const url = websiteUrl.trim()
+        if (!url) return
+        result = await settingsApi.extractSellerIntelligence({ website_url: url })
+      } else if (extractSource === 'files') {
+        if (selectedFiles.length === 0) return
+        result = await settingsApi.extractFromFiles(selectedFiles)
+      } else {
+        if (!pasteText.trim()) return
+        result = await settingsApi.extractSellerIntelligence({ text: pasteText.trim() })
+      }
+      setIntelligence(result!.seller_intelligence as SellerIntelligenceData)
     } catch (e) {
       setExtractError(String(e))
     } finally {
@@ -93,18 +108,53 @@ function SellerProfileTab() {
         <textarea value={portfolioItems} onChange={e => setPortfolioItems(e.target.value)} rows={4}
           className="mt-1 w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
       </div>
-      <div>
-        <label className="block text-sm font-medium text-gray-700">Website URL</label>
-        <div className="flex gap-2 mt-1">
-          <input value={websiteUrl} onChange={e => setWebsiteUrl(e.target.value)}
-            placeholder="https://www.yourcompany.com"
-            className="flex-1 rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
-          <button onClick={() => void rescrape()}
-            disabled={extracting || !websiteUrl.trim() || !websiteUrl.trim().startsWith('https://')}
-            className="rounded-md bg-gray-100 border border-gray-300 px-3 py-2 text-sm text-gray-700 hover:bg-gray-200 disabled:opacity-50">
-            {extracting ? 'Extracting...' : 'Re-scrape'}
-          </button>
+
+      {/* Intelligence extraction — multi-source */}
+      <div className="border border-gray-200 rounded-md p-4 space-y-3">
+        <label className="block text-sm font-medium text-gray-700">Extract Intelligence</label>
+        <div className="flex gap-2">
+          {([['url', 'Website URL'], ['files', 'Upload Files'], ['text', 'Paste Text']] as const).map(([value, label]) => (
+            <button key={value} type="button" onClick={() => setExtractSource(value)}
+              className={`px-3 py-1.5 text-xs rounded border ${
+                extractSource === value ? 'bg-blue-600 text-white border-blue-600' : 'border-gray-300 text-gray-600 hover:bg-gray-50'
+              }`}>
+              {label}
+            </button>
+          ))}
         </div>
+
+        {extractSource === 'url' && (
+          <div className="flex gap-2">
+            <input value={websiteUrl} onChange={e => setWebsiteUrl(e.target.value)}
+              placeholder="https://www.yourcompany.com"
+              className="flex-1 rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+          </div>
+        )}
+        {extractSource === 'files' && (
+          <div>
+            <input ref={fileInputRef} type="file" multiple accept=".pdf,.docx,.pptx,.xlsx,.html,.htm,.txt"
+              onChange={e => setSelectedFiles(Array.from(e.target.files || []))}
+              className="w-full text-sm text-gray-600 file:mr-3 file:py-1.5 file:px-3 file:rounded file:border-0 file:text-sm file:font-medium file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100" />
+            <p className="mt-1 text-xs text-gray-400">PDF, DOCX, PPTX, XLSX, HTML, TXT (max 5 files, 10MB each)</p>
+            {selectedFiles.length > 0 && (
+              <p className="mt-1 text-xs text-green-600">{selectedFiles.length} file{selectedFiles.length > 1 ? 's' : ''} selected</p>
+            )}
+          </div>
+        )}
+        {extractSource === 'text' && (
+          <textarea value={pasteText} onChange={e => setPasteText(e.target.value)}
+            placeholder="Paste content from pitch decks, case studies, battlecards..."
+            rows={4}
+            className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+        )}
+
+        <button onClick={() => void extractIntelligence()}
+          disabled={extracting || (extractSource === 'url' && (!websiteUrl.trim() || !websiteUrl.trim().startsWith('https://')))
+            || (extractSource === 'files' && selectedFiles.length === 0)
+            || (extractSource === 'text' && !pasteText.trim())}
+          className="rounded-md bg-gray-100 border border-gray-300 px-3 py-2 text-sm text-gray-700 hover:bg-gray-200 disabled:opacity-50">
+          {extracting ? 'Extracting...' : extractSource === 'url' ? 'Re-scrape' : extractSource === 'files' ? 'Extract from Files' : 'Extract from Text'}
+        </button>
         {extractError && <p className="mt-1 text-xs text-red-500">{extractError}</p>}
       </div>
 
