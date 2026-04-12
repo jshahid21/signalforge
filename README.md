@@ -128,13 +128,15 @@ cd frontend && npm run dev
 
 ### 4. First-run setup
 
-Open `http://localhost:5173`. The setup wizard walks you through:
+Open `http://localhost:5173`. The setup wizard has two steps:
 
-1. **Seller Profile** — your company name, portfolio summary, and product list
-2. **API Keys** — LLM provider selection and signal source keys
-3. **Capability Map** — auto-generated from your products, editable anytime
+1. **About You** — company name, products/services, and optionally a seller intelligence source:
+   - **Website URL** — auto-scrapes differentiators, sales plays, and proof points
+   - **File upload** — upload pitch decks, case studies, battlecards (PDF, DOCX, PPTX, XLSX, HTML, TXT)
+   - **Paste text** — copy-paste from internal docs
+2. **API Keys** — LLM provider and signal source keys
 
-Then enter company names and start your first analysis session.
+After setup, SignalForge auto-generates your capability map from the product list, extracts seller intelligence from whichever source you provided, and links them together. Then enter company names and start your first analysis session.
 
 ---
 
