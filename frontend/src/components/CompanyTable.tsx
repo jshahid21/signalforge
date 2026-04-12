@@ -4,6 +4,7 @@
  */
 import { useState } from 'react'
 import type { CompanyState, PipelineStatus } from '../api/client'
+import { InfoTooltip } from './InfoTooltip'
 import { ProgressBar } from './ProgressBar'
 
 // ── Status badge ───────────────────────────────────────────────────────────
@@ -158,7 +159,12 @@ export function CompanyTable({ companies, selectedCompanyId, onSelectCompany }: 
             <tr>
               <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Company</th>
               <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
-              <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase">Score</th>
+              <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase">
+                <span className="inline-flex items-center">
+                  Score
+                  <InfoTooltip text="Signal confidence score (0–100%). Higher means stronger buying signals detected." />
+                </span>
+              </th>
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-100">

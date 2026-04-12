@@ -3,6 +3,7 @@
  */
 import type { CompanyState, Persona, RawSignal } from '../api/client'
 import { HumanReviewBadge } from './HumanReviewBadge'
+import { InfoTooltip } from './InfoTooltip'
 
 interface Props {
   company: CompanyState
@@ -58,7 +59,10 @@ export function InsightsPanel({ company, selectedPersona }: Props) {
                   <div className="mt-1.5 flex flex-wrap gap-x-2 gap-y-1 items-center">
                     <span className="text-xs text-gray-500">{raw.signal_type}</span>
                     <span className="text-xs text-gray-400">·</span>
-                    <span className="text-xs text-gray-500">Tier: {raw.tier}</span>
+                    <span className="text-xs text-gray-500 inline-flex items-center">
+                      Tier: {raw.tier}
+                      <InfoTooltip text="Signal tier (1–3). Tier 1 = strongest, most actionable signals." />
+                    </span>
                     {raw.url && (
                       <>
                         <span className="text-xs text-gray-400">·</span>
@@ -83,7 +87,10 @@ export function InsightsPanel({ company, selectedPersona }: Props) {
               <div className="mt-1 flex gap-2 items-center">
                 <span className="text-xs text-gray-500">{signal.signal_type}</span>
                 <span className="text-xs text-gray-400">·</span>
-                <span className="text-xs text-gray-500">Tier: {signal.tier_used}</span>
+                <span className="text-xs text-gray-500 inline-flex items-center">
+                  Tier: {signal.tier_used}
+                  <InfoTooltip text="Signal tier (1–3). Tier 1 = strongest, most actionable signals." />
+                </span>
               </div>
             </>
           )}
@@ -93,7 +100,10 @@ export function InsightsPanel({ company, selectedPersona }: Props) {
       {/* Confidence */}
       {confidencePct != null && (
         <div className="flex items-center gap-2">
-          <span className="text-xs text-gray-500">Confidence</span>
+          <span className="text-xs text-gray-500 inline-flex items-center">
+            Confidence
+            <InfoTooltip text="Composite score combining signal strength, recency, and source reliability." />
+          </span>
           <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${confidenceBadgeStyles[confidenceColor]}`}>
             {confidencePct}%
           </span>
