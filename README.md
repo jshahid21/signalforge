@@ -328,7 +328,13 @@ Both are managed through the UI (Setup Wizard and Settings panel).
 
 ### Observability
 
-Optional LangSmith integration provides distributed tracing across the LangGraph pipeline — per-node latency, token counts, and HITL interrupt events. See `docs/observability.md` for setup.
+LangSmith integration provides production-grade observability with three layers:
+
+- **Tracing** — Toggle on/off via Settings panel. When enabled, every LLM call across all 9 pipeline agents reports to LangSmith with structured trace trees (pipeline → company → stage → LLM call). Per-stage latency, token counts, and cost breakdowns.
+- **Feedback** — Draft approvals log positive feedback (`score=1.0`) and regenerations log negative feedback (`score=0.0`) to LangSmith, tied to the originating trace via `run_id`. Enables prompt optimization based on real user signals.
+- **Evaluation** — LLM-as-judge rubric scores drafts on technical credibility, tone adherence, and absence of generic phrases.
+
+All gracefully no-op when tracing is disabled or LangSmith is not installed. See `docs/observability.md` for setup.
 
 ---
 
