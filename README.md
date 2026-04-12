@@ -56,10 +56,14 @@ flowchart TD
     P --> |Approved| Q[Memory Store]
     Q --> |"Few-shot examples"| O
 
+    S["Seller Intelligence"] --> |"Differentiators, sales plays,
+    proof points, competitive positioning"| O
+
     style K fill:#fef3c7,stroke:#d97706
     style P fill:#dbeafe,stroke:#2563eb
     style G fill:#fee2e2,stroke:#dc2626
     style N fill:#fee2e2,stroke:#dc2626
+    style S fill:#e0e7ff,stroke:#4f46e5
 ```
 
 Every stage streams progress to the UI via WebSocket, so you see exactly where each company is in the pipeline.
@@ -206,6 +210,7 @@ signalforge/
 │   │   ├── hitl_gate.py         # Human-in-the-loop pause
 │   │   ├── synthesis.py         # Per-persona deep context
 │   │   ├── draft.py             # Confidence-gated generation
+│   │   ├── seller_intelligence.py   # Website scrape + extraction
 │   │   ├── chat_assistant.py    # Company-scoped chat
 │   │   └── memory_agent.py      # Approved draft storage
 │   ├── api/
@@ -215,7 +220,7 @@ signalforge/
 │   │   └── routes/              # REST endpoints
 │   ├── config/                  # Config + capability map loader
 │   ├── models/                  # Pydantic/TypedDict schemas
-│   ├── tools/                   # JSearch + Tavily clients
+│   ├── tools/                   # JSearch, Tavily, web crawler
 │   └── pipeline.py              # LangGraph StateGraph wiring
 ├── frontend/
 │   └── src/
@@ -253,6 +258,12 @@ capabilities:
 ```
 
 Editable anytime via the Settings panel — add, remove, or refine entries as your portfolio evolves.
+
+### Seller Intelligence
+
+During setup, SignalForge auto-scrapes your company's public website to extract structured sales intelligence: differentiators, sales plays, proof points, and competitive positioning. This is injected directly into draft generation so outreach doesn't just reference what you sell — it references *how* you sell it, with the right proof points and competitive framing for each persona.
+
+Configured via the setup wizard's website URL field. The Settings panel lets you view, edit, and re-scrape intelligence as your positioning evolves.
 
 ### HITL Persona Gate
 
