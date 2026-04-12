@@ -342,6 +342,47 @@ class TestExtractAndSave:
         with pytest.raises(ValueError, match="LLM model"):
             await extract_and_save_seller_intelligence()
 
+    @pytest.mark.asyncio
+    async def test_auto_links_after_scrape_when_cap_map_exists(
+        self, tmp_config_dir, tmp_capability_map_path
+    ) -> None:
+        """Verify auto_link_intelligence is called after a successful scrape when a capability map exists."""
+        from backend.config.capability_map import CapabilityMap, CapabilityMapEntry, save_capability_map
+        from backend.config.loader import load_config, save_config
+
+        # Set up config with LLM model
+        config = load_config()
+        config.api_keys.llm_model = "claude-sonnet-4-6"
+        config.api_keys.llm_provider = "anthropic"
+        save_config(config)
+
+        # Create a capability map
+        cap_map = CapabilityMap(
+            entries=[CapabilityMapEntry({"id": "test", "label": "Test", "solution_areas": ["Test Area"]})],
+            version="1.0",
+        )
+        save_capability_map(cap_map)
+
+        mock_response = MagicMock()
+        mock_response.content = VALID_LLM_RESPONSE
+
+        with (
+            patch("backend.agents.seller_intelligence.fetch_html", new_callable=AsyncMock) as mock_fetch,
+            patch("backend.agents.seller_intelligence.crawl_url", new_callable=AsyncMock) as mock_crawl,
+            patch("backend.agents.seller_intelligence.ChatAnthropic") as mock_llm_cls,
+            patch("backend.agents.seller_intelligence.auto_link_intelligence", new_callable=AsyncMock) as mock_auto_link,
+        ):
+            mock_fetch.return_value = SAMPLE_HTML
+            mock_crawl.return_value = ""
+            mock_llm = MagicMock()
+            mock_llm.ainvoke = AsyncMock(return_value=mock_response)
+            mock_llm_cls.return_value = mock_llm
+            mock_auto_link.return_value = {}
+
+            await extract_and_save_seller_intelligence("https://testco.com")
+
+            mock_auto_link.assert_called_once()
+
 
 # ---------------------------------------------------------------------------
 # Auto-link prompt and parsing tests

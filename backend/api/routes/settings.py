@@ -135,9 +135,32 @@ async def auto_link_capability_intelligence() -> dict:
         mapping = await auto_link_intelligence(
             cap_map, intelligence, config.api_keys.llm_provider, llm_model,
         )
+
+        # Compute unlinked items (intelligence items not matched to any entry)
+        linked_diffs: set[str] = set()
+        linked_plays: set[str] = set()
+        linked_proofs: set[str] = set()
+        for items in mapping.values():
+            for d in items.get("differentiators", []):
+                if isinstance(d, str):
+                    linked_diffs.add(d)
+            for sp in items.get("sales_plays", []):
+                if isinstance(sp, dict):
+                    linked_plays.add(sp.get("play", ""))
+            for pp in items.get("proof_points", []):
+                if isinstance(pp, dict):
+                    linked_proofs.add(pp.get("customer", ""))
+
+        unlinked = {
+            "differentiators": [d for d in intelligence.differentiators if d not in linked_diffs],
+            "sales_plays": [sp.model_dump() for sp in intelligence.sales_plays if sp.play not in linked_plays],
+            "proof_points": [pp.model_dump() for pp in intelligence.proof_points if pp.customer not in linked_proofs],
+        }
+
         return {
             "status": "linked",
             "linked": mapping,
+            "unlinked": unlinked,
             "entries_updated": len(mapping),
         }
     except Exception as exc:
