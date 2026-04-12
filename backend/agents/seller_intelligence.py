@@ -75,43 +75,54 @@ def _validate_url(url: str) -> str:
 
 def _build_extraction_prompt(combined_text: str) -> str:
     """Build the LLM prompt for extracting seller intelligence from sales collateral."""
-    return f"""You are analyzing B2B sales collateral (which may include website content, pitch decks, case studies, battlecards, or other sales materials) to extract structured sales intelligence.
+    text = combined_text[:_MAX_COMBINED_TEXT]
+    is_large = len(combined_text) > 50_000
 
-Content:
-{combined_text[:_MAX_COMBINED_TEXT]}
+    large_doc_instruction = """
+IMPORTANT: This is a large document. Scan the ENTIRE content thoroughly — key information
+may be scattered across different sections (product pages, case studies, pricing, about,
+technical docs). Do NOT stop after the first few pages. Extract EVERY relevant item you find.""" if is_large else ""
 
-Extract the following four categories of intelligence from the content above.
-ONLY include information that is explicitly stated or strongly implied in the content.
-If a category has no supporting evidence, return an empty list for it — do NOT hallucinate.
+    return f"""You are a senior B2B sales analyst extracting structured intelligence from sales collateral.
+This may include website content, pitch decks, case studies, battlecards, product documentation, or other materials.
+{large_doc_instruction}
+
+Content to analyze:
+{text}
+
+Your task: Extract ALL relevant intelligence from the content above into four categories.
+Be thorough — a large document may contain dozens of items across categories.
+ONLY include information that is explicitly stated or strongly implied.
+If a category has no evidence, return an empty list — do NOT hallucinate.
 
 Output ONLY valid JSON in this exact format:
 {{
   "differentiators": [
-    "What makes this product/service unique — specific competitive advantages"
+    "What makes this product/service unique — specific competitive advantages, technical capabilities, architectural decisions"
   ],
   "sales_plays": [
     {{
-      "play": "A specific use case or value proposition",
-      "category": "snake_case_category (e.g., cost_optimization, security_compliance, platform_scaling, data_analytics, ml_ops, devops)"
+      "play": "A specific use case, value proposition, or solution for a customer problem",
+      "category": "snake_case_category (e.g., cost_optimization, security_compliance, platform_scaling, data_analytics, ml_ops, devops, migration, multicloud, observability, automation)"
     }}
   ],
   "proof_points": [
     {{
-      "customer": "Customer or company name",
-      "summary": "Brief outcome or metric (e.g., 'Reduced cloud costs by 40%')"
+      "customer": "Customer or company name (or industry if unnamed)",
+      "summary": "Outcome or metric (e.g., 'Reduced cloud costs by 40%', '99.99% uptime SLA')"
     }}
   ],
   "competitive_positioning": [
-    "How the seller differentiates from alternatives or competitors"
+    "How the seller differentiates from alternatives, competitors, or legacy approaches"
   ]
 }}
 
 Guidelines:
-- differentiators: 3-5 items, focus on unique technical or business advantages
-- sales_plays: 2-4 items, each with a problem-domain category
-- proof_points: Include any customer logos, case studies, or quantified outcomes mentioned
-- competitive_positioning: How they position against alternatives (may be empty if not discussed)
-- Be concise — each item should be 1-2 sentences maximum"""
+- differentiators: Extract ALL unique advantages — technical, operational, business. No limit.
+- sales_plays: Extract EVERY distinct use case or value proposition. Include the problem it solves.
+- proof_points: Include ALL customer references, metrics, SLAs, performance claims, and case study outcomes.
+- competitive_positioning: Include comparisons to competitors, legacy approaches, open-source alternatives, DIY approaches.
+- Each item should be 1-2 sentences. Be specific — include named technologies, metrics, and concrete details."""
 
 
 def _stringify_llm_content(raw: str | list[Any] | Any) -> str:
