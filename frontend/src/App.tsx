@@ -307,7 +307,14 @@ export default function App() {
   // ── Render ─────────────────────────────────────────────────────────────
 
   if (loading) {
-    return <div className="flex h-screen items-center justify-center text-gray-500">Loading…</div>
+    return (
+      <div className="flex h-screen items-center justify-center bg-gray-50">
+        <div className="flex flex-col items-center gap-3">
+          <div className="h-8 w-8 animate-spin rounded-full border-2 border-blue-600 border-t-transparent" />
+          <span className="text-sm font-medium text-gray-500">Loading SignalForge…</span>
+        </div>
+      </div>
+    )
   }
 
   if (firstRun) {
@@ -317,9 +324,14 @@ export default function App() {
   return (
     <div className="flex flex-col h-screen bg-white">
       {/* Navbar */}
-      <header className="flex items-center justify-between border-b border-gray-200 px-4 py-2 bg-white">
+      <header className="flex items-center justify-between px-5 py-2.5 bg-white shadow-sm border-b border-gray-100">
         <div className="flex items-center gap-3">
-          <h1 className="text-base font-bold text-gray-900">SignalForge</h1>
+          <div className="flex items-center gap-2">
+            <div className="h-6 w-6 rounded-md bg-gradient-to-br from-blue-600 to-indigo-600 flex items-center justify-center">
+              <span className="text-white text-xs font-bold">S</span>
+            </div>
+            <h1 className="text-lg font-extrabold tracking-tight text-gray-900">SignalForge</h1>
+          </div>
           {currentSession && (
             <StatusBadge status={currentSession.status} />
           )}
@@ -327,13 +339,13 @@ export default function App() {
         <div className="flex items-center gap-2">
           <button
             onClick={() => { setCurrentSession(null); setSelectedCompany(null) }}
-            className="rounded-md border border-gray-300 px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-50"
+            className="rounded-lg border border-gray-200 px-3.5 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50 hover:border-gray-300 transition-colors"
           >
-            New Session
+            + New Session
           </button>
           <button
             onClick={() => setShowSettings(true)}
-            className="rounded-md border border-gray-300 px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-50"
+            className="rounded-lg border border-gray-200 px-3.5 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50 hover:border-gray-300 transition-colors"
             aria-label="Open settings"
           >
             ⚙ Settings
@@ -393,16 +405,18 @@ export default function App() {
                   <div className="flex flex-1 overflow-hidden border-b border-gray-200">
                     {/* Insights */}
                     <div className="w-1/2 border-r border-gray-200 overflow-y-auto">
-                      <div className="px-4 pt-3 pb-1 text-xs font-semibold uppercase text-gray-500">
-                        Insights — {selectedCompany.company_name}
+                      <div className="px-4 pt-3 pb-1 flex items-center gap-2">
+                        <span className="text-xs font-bold uppercase tracking-wider text-gray-400">Insights</span>
+                        <span className="text-xs text-gray-300">—</span>
+                        <span className="text-xs font-medium text-gray-600">{selectedCompany.company_name}</span>
                       </div>
                       <InsightsPanel company={selectedCompany} selectedPersona={selectedPersona} />
                     </div>
 
                     {/* Personas */}
                     <div className="w-1/2 overflow-y-auto">
-                      <div className="px-4 pt-3 pb-1 text-xs font-semibold uppercase text-gray-500">
-                        Personas
+                      <div className="px-4 pt-3 pb-1">
+                        <span className="text-xs font-bold uppercase tracking-wider text-gray-400">Personas</span>
                       </div>
                       <div className="px-4 pb-4">
                         <PersonaTable
@@ -439,7 +453,7 @@ export default function App() {
                   {/* Bottom: draft panel */}
                   <div className="h-80 flex flex-col overflow-hidden">
                     <div className="flex items-center gap-2 px-4 pt-3 pb-1 border-b border-gray-100">
-                      <span className="text-xs font-semibold uppercase text-gray-500">Draft</span>
+                      <span className="text-xs font-bold uppercase tracking-wider text-gray-400">Draft</span>
                       {personas.length > 0 && (
                         <div className="flex gap-1">
                           {personas.map(p => (
@@ -479,8 +493,14 @@ export default function App() {
                   />
                 </>
               ) : (
-                <div className="flex h-full items-center justify-center text-sm text-gray-400">
-                  Select a company to view insights and drafts.
+                <div className="flex h-full items-center justify-center">
+                  <div className="text-center">
+                    <div className="mx-auto mb-3 h-12 w-12 rounded-full bg-gray-100 flex items-center justify-center">
+                      <span className="text-xl text-gray-400">⟵</span>
+                    </div>
+                    <p className="text-sm font-medium text-gray-500">Select a company</p>
+                    <p className="text-xs text-gray-400 mt-1">Choose a company from the list to view insights and drafts</p>
+                  </div>
                 </div>
               )}
             </div>

@@ -63,8 +63,8 @@ function CompanyRow({ company, isSelected, onClick }: RowProps) {
   return (
     <tr
       className={[
-        'cursor-pointer hover:bg-gray-50 transition-colors',
-        isSelected ? 'bg-blue-50 border-l-2 border-blue-500' : '',
+        'cursor-pointer hover:bg-blue-50/50 transition-colors',
+        isSelected ? 'bg-blue-50 border-l-3 border-l-blue-600' : 'border-l-3 border-l-transparent',
       ].join(' ')}
       onClick={onClick}
       data-testid={`company-row-${rowId}`}
@@ -125,8 +125,14 @@ export function CompanyTable({ companies, selectedCompanyId, onSelectCompany }: 
 
   if (companies.length === 0) {
     return (
-      <div className="flex h-full items-center justify-center text-gray-400 text-sm p-8">
-        No companies in this session.
+      <div className="flex h-full items-center justify-center p-8">
+        <div className="text-center">
+          <div className="mx-auto mb-2 h-10 w-10 rounded-full bg-gray-100 flex items-center justify-center">
+            <span className="text-lg text-gray-400">🏢</span>
+          </div>
+          <p className="text-sm font-medium text-gray-500">No companies yet</p>
+          <p className="text-xs text-gray-400 mt-1">Start a new session to analyze companies</p>
+        </div>
       </div>
     )
   }

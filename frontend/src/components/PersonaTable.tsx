@@ -110,8 +110,12 @@ export function PersonaTable({
 
   if (allPersonas.length === 0) {
     return (
-      <div className="text-sm text-gray-400 py-4 text-center">
-        No personas generated yet.
+      <div className="py-8 text-center">
+        <div className="mx-auto mb-2 h-10 w-10 rounded-full bg-gray-100 flex items-center justify-center">
+          <span className="text-lg text-gray-400">👥</span>
+        </div>
+        <p className="text-sm font-medium text-gray-500">No personas yet</p>
+        <p className="text-xs text-gray-400 mt-1">Personas will appear once signal analysis completes</p>
       </div>
     )
   }
@@ -153,7 +157,7 @@ export function PersonaTable({
         </thead>
         <tbody className="divide-y divide-gray-100">
           {allPersonas.map(persona => (
-            <tr key={persona.persona_id} data-testid={`persona-row-${persona.persona_id}`}>
+            <tr key={persona.persona_id} data-testid={`persona-row-${persona.persona_id}`} className="hover:bg-blue-50/50 transition-colors">
               {isHitlMode && (
                 <td className="py-2 pr-2">
                   <input

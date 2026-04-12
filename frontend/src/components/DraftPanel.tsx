@@ -55,26 +55,36 @@ export function DraftPanel({ draft, persona, humanReviewRequired, onApprove, onR
 
   if (!draft) {
     return (
-      <div className="flex h-full items-center justify-center text-sm text-gray-400 p-8">
-        {persona ? 'Draft not yet generated.' : 'Select a persona to view draft.'}
+      <div className="flex h-full items-center justify-center p-8">
+        <div className="text-center">
+          <div className="mx-auto mb-3 h-10 w-10 rounded-full bg-gray-100 flex items-center justify-center">
+            <span className="text-lg text-gray-400">{persona ? '✉' : '👤'}</span>
+          </div>
+          <p className="text-sm font-medium text-gray-500">
+            {persona ? 'Draft not yet generated' : 'No persona selected'}
+          </p>
+          <p className="text-xs text-gray-400 mt-1">
+            {persona ? 'The draft will appear here once the pipeline completes.' : 'Select a persona above to view their draft.'}
+          </p>
+        </div>
       </div>
     )
   }
 
   return (
-    <div className="flex flex-col h-full p-4 space-y-3">
+    <div className={`flex flex-col h-full p-4 space-y-3 ${draft.approved ? 'bg-green-50/40' : ''}`}>
       {/* Header */}
       <div className="flex items-center justify-between">
-        <div className="text-xs text-gray-500">
-          {persona && <span className="font-medium">{persona.title}</span>}
+        <div className="flex items-center gap-2 text-xs text-gray-500">
+          {persona && <span className="font-medium text-gray-700">{persona.title}</span>}
           {draft.version > 1 && (
-            <span className="ml-2 rounded bg-gray-100 px-1.5 py-0.5 text-xs text-gray-500">
+            <span className="rounded-full bg-gray-100 px-2 py-0.5 text-xs text-gray-500">
               v{draft.version}
             </span>
           )}
           {draft.approved && (
-            <span className="ml-2 rounded bg-green-100 px-1.5 py-0.5 text-xs text-green-700">
-              Approved
+            <span className="rounded-full bg-green-600 px-2.5 py-0.5 text-xs font-medium text-white" data-testid="draft-approved-badge">
+              ✓ Approved
             </span>
           )}
         </div>
@@ -83,52 +93,58 @@ export function DraftPanel({ draft, persona, humanReviewRequired, onApprove, onR
         </div>
       </div>
 
-      {/* Subject line */}
-      <div>
-        <label className="text-xs font-medium text-gray-500 uppercase">Subject</label>
-        <input
-          value={subject}
-          onChange={e => setSubject(e.target.value)}
-          className="mt-1 w-full rounded-md border border-gray-300 px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-          aria-label="Draft subject line"
-        />
-      </div>
+      {/* Email card */}
+      <div className="flex-1 rounded-lg border border-gray-200 bg-white shadow-sm overflow-hidden flex flex-col" data-testid="draft-email-card">
+        {/* Subject line */}
+        <div className="border-b border-gray-100 px-4 py-2">
+          <label className="text-[10px] font-medium text-gray-400 uppercase">Subject</label>
+          <input
+            value={subject}
+            onChange={e => setSubject(e.target.value)}
+            className="w-full text-sm font-medium text-gray-900 bg-transparent border-none p-0 mt-0.5 focus:outline-none focus:ring-0"
+            aria-label="Draft subject line"
+          />
+        </div>
 
-      {/* Body */}
-      <div className="flex-1">
-        <label className="text-xs font-medium text-gray-500 uppercase">Body</label>
-        <textarea
-          value={body}
-          onChange={e => setBody(e.target.value)}
-          className="mt-1 w-full rounded-md border border-gray-300 px-3 py-2 text-sm resize-none h-48 focus:outline-none focus:ring-2 focus:ring-blue-500"
-          aria-label="Draft body"
-        />
+        {/* Body */}
+        <div className="flex-1 px-4 py-3">
+          <textarea
+            value={body}
+            onChange={e => setBody(e.target.value)}
+            className="w-full h-full text-sm text-gray-700 bg-transparent border-none resize-none p-0 focus:outline-none focus:ring-0 leading-relaxed"
+            aria-label="Draft body"
+          />
+        </div>
       </div>
 
       {/* Actions */}
       <div className="flex gap-2">
         <button
           onClick={copyToClipboard}
-          className="flex-1 rounded-md border border-gray-300 px-3 py-1.5 text-sm hover:bg-gray-50"
+          className="flex-1 rounded-lg border border-gray-200 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 hover:border-gray-300 transition-colors"
           aria-label="Copy draft to clipboard"
         >
-          {copied ? 'Copied!' : 'Copy'}
+          {copied ? '✓ Copied!' : '📋 Copy'}
         </button>
         <button
           onClick={handleRegenerate}
           disabled={regenerating}
-          className="flex-1 rounded-md border border-gray-300 px-3 py-1.5 text-sm hover:bg-gray-50 disabled:opacity-50"
+          className="flex-1 rounded-lg border border-gray-200 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 hover:border-gray-300 transition-colors disabled:opacity-50"
           aria-label="Regenerate draft"
         >
-          {regenerating ? 'Regenerating…' : 'Regenerate'}
+          {regenerating ? '↻ Regenerating…' : '↻ Regenerate'}
         </button>
         <button
           onClick={handleApprove}
           disabled={approving || draft.approved}
-          className="flex-1 rounded-md bg-green-600 px-3 py-1.5 text-sm text-white hover:bg-green-700 disabled:opacity-50"
+          className={`flex-1 rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
+            draft.approved
+              ? 'bg-green-600 text-white cursor-default'
+              : 'bg-green-600 text-white hover:bg-green-700 disabled:opacity-50'
+          }`}
           aria-label="Approve draft"
         >
-          {approving ? 'Approving…' : draft.approved ? 'Approved' : 'Approve'}
+          {approving ? 'Approving…' : draft.approved ? '✓ Approved' : '✓ Approve'}
         </button>
       </div>
     </div>

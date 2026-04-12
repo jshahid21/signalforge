@@ -19,8 +19,24 @@ export function InsightsPanel({ company, selectedPersona }: Props) {
 
   if (!signal && !solution_mapping && !synthesis) {
     return (
-      <div className="flex h-full items-center justify-center text-sm text-gray-400 p-8">
-        {company.status === 'running' ? 'Analyzing signals…' : 'No signals found.'}
+      <div className="flex h-full items-center justify-center p-8">
+        <div className="text-center">
+          {company.status === 'running' ? (
+            <>
+              <div className="mx-auto mb-3 h-8 w-8 animate-spin rounded-full border-2 border-blue-600 border-t-transparent" />
+              <p className="text-sm font-medium text-gray-500">Analyzing signals…</p>
+              <p className="text-xs text-gray-400 mt-1">Searching for buying signals across data sources</p>
+            </>
+          ) : (
+            <>
+              <div className="mx-auto mb-3 h-10 w-10 rounded-full bg-gray-100 flex items-center justify-center">
+                <span className="text-lg text-gray-400">📡</span>
+              </div>
+              <p className="text-sm font-medium text-gray-500">No signals found</p>
+              <p className="text-xs text-gray-400 mt-1">No buying signals were detected for this company</p>
+            </>
+          )}
+        </div>
       </div>
     )
   }
@@ -54,7 +70,7 @@ export function InsightsPanel({ company, selectedPersona }: Props) {
           {signal.raw_signals && signal.raw_signals.length > 0 ? (
             <div className="space-y-2">
               {signal.raw_signals.map((raw: RawSignal, i: number) => (
-                <div key={i} className="rounded border border-gray-100 bg-gray-50 p-2.5">
+                <div key={i} className="rounded-lg border border-gray-200 bg-white shadow-sm p-3">
                   <p className="text-xs text-gray-800 line-clamp-3">{raw.content}</p>
                   <div className="mt-1.5 flex flex-wrap gap-x-2 gap-y-1 items-center">
                     <span className="text-xs text-gray-500">{raw.signal_type}</span>
