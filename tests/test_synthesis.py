@@ -69,10 +69,12 @@ def _make_company_state(
             hiring_signals="Scaling platform engineering.",
             partial=False,
         ),
+        industry=None,
         solution_mapping=SolutionMappingOutput(
             core_problem="Scaling Kubernetes infrastructure for global payments.",
             solution_areas=["Container orchestration", "Platform automation"],
             inferred_areas=[],
+            matched_capability_ids=[],
             confidence_score=75,
             reasoning="Strong infra signal.",
         ),

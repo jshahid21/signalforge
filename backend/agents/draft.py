@@ -133,7 +133,7 @@ def _build_seller_intelligence_section(
         )
         parts.append(f"Proof points (use only if directly relevant to build credibility):\n{pp_list}")
 
-    competitive = intelligence.get("competitive_positioning", [])
+    competitive = (intelligence or {}).get("competitive_positioning", [])
     if competitive:
         comp_list = "\n".join(f"  - {c}" for c in competitive[:3])
         parts.append(f"Competitive positioning:\n{comp_list}")
