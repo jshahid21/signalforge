@@ -80,9 +80,9 @@ def _build_extraction_prompt(combined_text: str) -> str:
 Content:
 {combined_text[:_MAX_COMBINED_TEXT]}
 
-Extract the following four categories of intelligence from this website content.
-ONLY include information that is explicitly stated or strongly implied on the website.
-If a category has no supporting evidence on the site, return an empty list for it — do NOT hallucinate.
+Extract the following four categories of intelligence from the content above.
+ONLY include information that is explicitly stated or strongly implied in the content.
+If a category has no supporting evidence, return an empty list for it — do NOT hallucinate.
 
 Output ONLY valid JSON in this exact format:
 {{

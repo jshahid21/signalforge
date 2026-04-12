@@ -14,6 +14,7 @@ from backend.agents.seller_intelligence import (
     _validate_url,
     auto_link_intelligence,
     extract_seller_intelligence,
+    extract_seller_intelligence_from_text,
     extract_and_save_seller_intelligence,
 )
 from backend.config.capability_map import CapabilityMap, CapabilityMapEntry
@@ -574,3 +575,136 @@ class TestAutoLinkIntelligence:
         # Entries unchanged
         dp = next(e for e in cap_map.entries if e.id == "data_platform")
         assert dp.differentiators == []
+
+
+# ---------------------------------------------------------------------------
+# extract_seller_intelligence_from_text
+# ---------------------------------------------------------------------------
+
+
+class TestExtractFromText:
+
+    _VALID_JSON = json.dumps({
+        "differentiators": ["Cloud-native architecture"],
+        "sales_plays": [{"play": "Cost reduction", "category": "cost_optimization"}],
+        "proof_points": [{"customer": "Acme Corp", "summary": "Saved 30%"}],
+        "competitive_positioning": ["Faster than legacy tools"],
+    })
+
+    @pytest.mark.asyncio
+    async def test_extracts_from_text(self) -> None:
+        mock_response = MagicMock()
+        mock_response.content = self._VALID_JSON
+
+        with patch("backend.agents.seller_intelligence.ChatAnthropic") as mock_cls:
+            mock_llm = MagicMock()
+            mock_llm.ainvoke = AsyncMock(return_value=mock_response)
+            mock_cls.return_value = mock_llm
+
+            result = await extract_seller_intelligence_from_text(
+                "We are a cloud-native platform.", "anthropic", "claude-sonnet-4-6",
+            )
+
+        assert isinstance(result, SellerIntelligence)
+        assert result.differentiators == ["Cloud-native architecture"]
+        assert len(result.sales_plays) == 1
+        assert result.last_scraped is not None
+
+    @pytest.mark.asyncio
+    async def test_empty_text_raises(self) -> None:
+        with pytest.raises(ValueError, match="No text content"):
+            await extract_seller_intelligence_from_text("", "anthropic", "claude-sonnet-4-6")
+
+    @pytest.mark.asyncio
+    async def test_whitespace_only_raises(self) -> None:
+        with pytest.raises(ValueError, match="No text content"):
+            await extract_seller_intelligence_from_text("  \n  ", "anthropic", "claude-sonnet-4-6")
+
+    @pytest.mark.asyncio
+    async def test_truncates_long_text(self) -> None:
+        mock_response = MagicMock()
+        mock_response.content = self._VALID_JSON
+
+        with patch("backend.agents.seller_intelligence.ChatAnthropic") as mock_cls:
+            mock_llm = MagicMock()
+            mock_llm.ainvoke = AsyncMock(return_value=mock_response)
+            mock_cls.return_value = mock_llm
+
+            long_text = "x" * 50_000
+            result = await extract_seller_intelligence_from_text(
+                long_text, "anthropic", "claude-sonnet-4-6",
+            )
+
+        # Should succeed (truncation happens internally)
+        assert isinstance(result, SellerIntelligence)
+
+    @pytest.mark.asyncio
+    async def test_uses_openai_provider(self) -> None:
+        mock_response = MagicMock()
+        mock_response.content = self._VALID_JSON
+
+        with patch("backend.agents.seller_intelligence.ChatOpenAI") as mock_cls:
+            mock_llm = MagicMock()
+            mock_llm.ainvoke = AsyncMock(return_value=mock_response)
+            mock_cls.return_value = mock_llm
+
+            result = await extract_seller_intelligence_from_text(
+                "Enterprise ML platform.", "openai", "gpt-4o-mini",
+            )
+
+        assert isinstance(result, SellerIntelligence)
+        mock_cls.assert_called_once()
+
+
+class TestExtractAndSaveWithText:
+
+    _VALID_JSON = json.dumps({
+        "differentiators": ["Fast deployment"],
+        "sales_plays": [],
+        "proof_points": [],
+        "competitive_positioning": [],
+    })
+
+    @pytest.mark.asyncio
+    async def test_saves_from_text(self, tmp_config_dir, tmp_capability_map_path) -> None:
+        from backend.config.loader import load_config, save_config
+
+        config = load_config()
+        config.api_keys.llm_model = "claude-sonnet-4-6"
+        config.api_keys.llm_provider = "anthropic"
+        save_config(config)
+
+        mock_response = MagicMock()
+        mock_response.content = self._VALID_JSON
+
+        with patch("backend.agents.seller_intelligence.ChatAnthropic") as mock_cls:
+            mock_llm = MagicMock()
+            mock_llm.ainvoke = AsyncMock(return_value=mock_response)
+            mock_cls.return_value = mock_llm
+
+            result = await extract_and_save_seller_intelligence(text="Pitch deck content")
+
+        assert isinstance(result, SellerIntelligence)
+        assert result.differentiators == ["Fast deployment"]
+
+        # Verify saved to config
+        reloaded = load_config()
+        assert reloaded.seller_profile.seller_intelligence.differentiators == ["Fast deployment"]
+
+
+# ---------------------------------------------------------------------------
+# Prompt generalization
+# ---------------------------------------------------------------------------
+
+
+class TestPromptGeneralization:
+
+    def test_no_website_specific_language(self) -> None:
+        prompt = _build_extraction_prompt("Sample content.")
+        # First line should use generic language
+        first_line = prompt.split("\n")[0].lower()
+        assert "sales collateral" in first_line
+        # Body should not say "website content" or "on the website"
+        assert "from this website content" not in prompt.lower()
+        assert "on the website" not in prompt.lower()
+        assert "on the site" not in prompt.lower()
