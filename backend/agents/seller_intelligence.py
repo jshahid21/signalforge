@@ -5,6 +5,9 @@ and uses the configured LLM to extract structured intelligence: differentiators,
 proof points, and competitive positioning.
 
 The extracted SellerIntelligence is saved to the seller profile config for use in draft generation.
+
+Auto-linking: After extraction, seller intelligence items can be linked to capability map entries
+via LLM-based semantic matching (auto_link_intelligence).
 """
 from __future__ import annotations
 
@@ -278,4 +281,145 @@ async def extract_and_save_seller_intelligence(
     config.seller_profile.seller_intelligence = intelligence
     save_config(config)
 
+    # Auto-link to capability map if available
+    from backend.config.capability_map import load_capability_map
+    cap_map = load_capability_map()
+    if cap_map and cap_map.entries:
+        try:
+            await auto_link_intelligence(cap_map, intelligence, llm_provider, llm_model)
+            logger.info("Auto-linked seller intelligence to %d capability entries", len(cap_map.entries))
+        except Exception:
+            logger.warning("Auto-linking failed; capability map unchanged", exc_info=True)
+
     return intelligence
+
+
+# ---------------------------------------------------------------------------
+# Auto-linking: match seller intelligence to capability map entries
+# ---------------------------------------------------------------------------
+
+_MAX_INTELLIGENCE_ITEMS = 10  # truncate each category to avoid prompt overflow
+
+
+def _build_auto_link_prompt(
+    capability_entries: list[dict[str, Any]],
+    intelligence: SellerIntelligence,
+) -> str:
+    """Build LLM prompt for matching intelligence items to capability entries."""
+    entries_text = "\n".join(
+        f"- id: {e['id']} | label: {e['label']} | areas: {', '.join(e.get('solution_areas', []))}"
+        for e in capability_entries
+    )
+
+    diffs = intelligence.differentiators[:_MAX_INTELLIGENCE_ITEMS]
+    plays = [sp.model_dump() for sp in intelligence.sales_plays[:_MAX_INTELLIGENCE_ITEMS]]
+    proofs = [pp.model_dump() for pp in intelligence.proof_points[:_MAX_INTELLIGENCE_ITEMS]]
+
+    return f"""You are matching seller intelligence to capability map entries based on semantic relevance.
+
+Capability Map Entries:
+{entries_text}
+
+Seller Intelligence:
+- Differentiators: {json.dumps(diffs)}
+- Sales Plays: {json.dumps(plays)}
+- Proof Points: {json.dumps(proofs)}
+
+For each capability entry, select the differentiators, sales plays, and proof points that are most relevant.
+An item can match multiple entries or no entries. Only assign items where there is clear semantic relevance.
+
+Output ONLY valid JSON in this format:
+{{
+  "{capability_entries[0]['id'] if capability_entries else 'example_id'}": {{
+    "differentiators": ["<matched differentiator text>"],
+    "sales_plays": [{{"play": "...", "category": "..."}}],
+    "proof_points": [{{"customer": "...", "summary": "..."}}]
+  }}
+}}
+
+Include only entries that have at least one matched item. Omit entries with no matches."""
+
+
+def _parse_auto_link_response(text: str) -> dict[str, dict[str, Any]] | None:
+    """Parse LLM auto-link response. Returns mapping of entry_id → intelligence items."""
+    text = text.strip()
+    start = text.find("{")
+    end = text.rfind("}") + 1
+    if start == -1 or end == 0:
+        return None
+    try:
+        data = json.loads(text[start:end])
+        if not isinstance(data, dict):
+            return None
+        return data
+    except (json.JSONDecodeError, ValueError, TypeError):
+        return None
+
+
+@traceable(name="auto_link_intelligence")
+async def auto_link_intelligence(
+    capability_map: Any,  # CapabilityMap — avoid circular import at type level
+    intelligence: SellerIntelligence,
+    llm_provider: str,
+    llm_model: str,
+) -> dict[str, dict[str, Any]]:
+    """Match seller intelligence items to capability map entries using LLM.
+
+    Updates capability map entries in-place and saves to disk.
+
+    Returns:
+        Mapping of entry_id → {differentiators, sales_plays, proof_points} for matched entries.
+    """
+    from backend.config.capability_map import save_capability_map
+
+    if not capability_map.entries:
+        return {}
+
+    has_items = (
+        intelligence.differentiators
+        or intelligence.sales_plays
+        or intelligence.proof_points
+    )
+    if not has_items:
+        return {}
+
+    entries_data = [e.as_dict() for e in capability_map.entries]
+    prompt = _build_auto_link_prompt(entries_data, intelligence)
+
+    route = _normalized_llm_provider(llm_provider)
+    if route == "openai":
+        llm = ChatOpenAI(model=llm_model.strip().lower(), max_tokens=2000, temperature=0)
+    else:
+        llm = ChatAnthropic(model=llm_model.strip(), max_tokens=2000, temperature=0)
+
+    response = await llm.ainvoke([HumanMessage(content=prompt)])
+    raw_text = _stringify_llm_content(response.content)
+
+    mapping = _parse_auto_link_response(raw_text)
+    if mapping is None:
+        logger.warning("Auto-link LLM returned unparseable response")
+        return {}
+
+    # Apply mapping to capability map entries
+    entry_by_id = {e.id: e for e in capability_map.entries}
+    for entry_id, items in mapping.items():
+        entry = entry_by_id.get(entry_id)
+        if entry is None:
+            logger.warning("Auto-link referenced unknown capability ID: %s", entry_id)
+            continue
+
+        if isinstance(items.get("differentiators"), list):
+            entry.differentiators = [str(d) for d in items["differentiators"] if isinstance(d, str)]
+        if isinstance(items.get("sales_plays"), list):
+            entry.sales_plays = [
+                sp for sp in items["sales_plays"]
+                if isinstance(sp, dict) and "play" in sp and "category" in sp
+            ]
+        if isinstance(items.get("proof_points"), list):
+            entry.proof_points = [
+                pp for pp in items["proof_points"]
+                if isinstance(pp, dict) and "customer" in pp and "summary" in pp
+            ]
+
+    save_capability_map(capability_map)
+    return mapping

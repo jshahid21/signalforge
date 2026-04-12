@@ -7,13 +7,17 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from backend.agents.seller_intelligence import (
+    _build_auto_link_prompt,
     _build_extraction_prompt,
+    _parse_auto_link_response,
     _parse_extraction_response,
     _validate_url,
+    auto_link_intelligence,
     extract_seller_intelligence,
     extract_and_save_seller_intelligence,
 )
-from backend.config.loader import SellerIntelligence
+from backend.config.capability_map import CapabilityMap, CapabilityMapEntry
+from backend.config.loader import ProofPoint, SalesPlay, SellerIntelligence
 
 
 # ---------------------------------------------------------------------------
@@ -337,3 +341,195 @@ class TestExtractAndSave:
 
         with pytest.raises(ValueError, match="LLM model"):
             await extract_and_save_seller_intelligence()
+
+
+# ---------------------------------------------------------------------------
+# Auto-link prompt and parsing tests
+# ---------------------------------------------------------------------------
+
+
+def _make_cap_map() -> CapabilityMap:
+    return CapabilityMap(
+        entries=[
+            CapabilityMapEntry({
+                "id": "data_platform",
+                "label": "Data Platform",
+                "solution_areas": ["Columnar storage", "Stream processing"],
+            }),
+            CapabilityMapEntry({
+                "id": "ml_infra",
+                "label": "ML Infrastructure",
+                "solution_areas": ["Model training", "Inference optimization"],
+            }),
+        ],
+        version="1.0",
+    )
+
+
+def _make_intelligence() -> SellerIntelligence:
+    return SellerIntelligence(
+        differentiators=["Best-in-class ML ops", "Zero-downtime deployments"],
+        sales_plays=[
+            SalesPlay(play="FinOps cost optimization", category="cost_optimization"),
+            SalesPlay(play="ML model deployment", category="ml_ops"),
+        ],
+        proof_points=[
+            ProofPoint(customer="Acme Corp", summary="Reduced costs by 40%"),
+            ProofPoint(customer="BigCo", summary="2x faster model inference"),
+        ],
+    )
+
+
+VALID_AUTO_LINK_RESPONSE = json.dumps({
+    "data_platform": {
+        "differentiators": [],
+        "sales_plays": [{"play": "FinOps cost optimization", "category": "cost_optimization"}],
+        "proof_points": [{"customer": "Acme Corp", "summary": "Reduced costs by 40%"}],
+    },
+    "ml_infra": {
+        "differentiators": ["Best-in-class ML ops"],
+        "sales_plays": [{"play": "ML model deployment", "category": "ml_ops"}],
+        "proof_points": [{"customer": "BigCo", "summary": "2x faster model inference"}],
+    },
+})
+
+
+class TestBuildAutoLinkPrompt:
+    def test_includes_capability_ids_and_labels(self) -> None:
+        cap_map = _make_cap_map()
+        intelligence = _make_intelligence()
+        prompt = _build_auto_link_prompt(
+            [e.as_dict() for e in cap_map.entries], intelligence
+        )
+        assert "data_platform" in prompt
+        assert "Data Platform" in prompt
+        assert "ml_infra" in prompt
+        assert "ML Infrastructure" in prompt
+
+    def test_includes_intelligence_items(self) -> None:
+        cap_map = _make_cap_map()
+        intelligence = _make_intelligence()
+        prompt = _build_auto_link_prompt(
+            [e.as_dict() for e in cap_map.entries], intelligence
+        )
+        assert "Best-in-class ML ops" in prompt
+        assert "FinOps cost optimization" in prompt
+        assert "Acme Corp" in prompt
+
+
+class TestParseAutoLinkResponse:
+    def test_parses_valid_response(self) -> None:
+        result = _parse_auto_link_response(VALID_AUTO_LINK_RESPONSE)
+        assert result is not None
+        assert "data_platform" in result
+        assert "ml_infra" in result
+        assert len(result["ml_infra"]["differentiators"]) == 1
+
+    def test_returns_none_on_invalid_json(self) -> None:
+        assert _parse_auto_link_response("not json") is None
+
+    def test_returns_none_on_empty(self) -> None:
+        assert _parse_auto_link_response("") is None
+
+    def test_handles_surrounding_text(self) -> None:
+        response = f"Here is the mapping:\n{VALID_AUTO_LINK_RESPONSE}\nDone."
+        result = _parse_auto_link_response(response)
+        assert result is not None
+        assert "data_platform" in result
+
+
+class TestAutoLinkIntelligence:
+    @pytest.mark.asyncio
+    async def test_links_items_to_entries(self, tmp_capability_map_path, tmp_config_dir) -> None:
+        cap_map = _make_cap_map()
+        intelligence = _make_intelligence()
+
+        mock_response = MagicMock()
+        mock_response.content = VALID_AUTO_LINK_RESPONSE
+
+        with patch("backend.agents.seller_intelligence.ChatAnthropic") as mock_cls:
+            mock_llm = MagicMock()
+            mock_llm.ainvoke = AsyncMock(return_value=mock_response)
+            mock_cls.return_value = mock_llm
+
+            result = await auto_link_intelligence(
+                cap_map, intelligence, "anthropic", "claude-sonnet-4-6"
+            )
+
+        assert "data_platform" in result
+        assert "ml_infra" in result
+        # Verify entries were updated in-place
+        dp = next(e for e in cap_map.entries if e.id == "data_platform")
+        assert len(dp.proof_points) == 1
+        assert dp.proof_points[0]["customer"] == "Acme Corp"
+        ml = next(e for e in cap_map.entries if e.id == "ml_infra")
+        assert ml.differentiators == ["Best-in-class ML ops"]
+
+    @pytest.mark.asyncio
+    async def test_returns_empty_on_no_entries(self) -> None:
+        cap_map = CapabilityMap(entries=[], version="1.0")
+        intelligence = _make_intelligence()
+        result = await auto_link_intelligence(cap_map, intelligence, "anthropic", "model")
+        assert result == {}
+
+    @pytest.mark.asyncio
+    async def test_returns_empty_on_no_intelligence(self) -> None:
+        cap_map = _make_cap_map()
+        intelligence = SellerIntelligence()
+        result = await auto_link_intelligence(cap_map, intelligence, "anthropic", "model")
+        assert result == {}
+
+    @pytest.mark.asyncio
+    async def test_handles_unknown_capability_ids(self, tmp_capability_map_path, tmp_config_dir) -> None:
+        cap_map = _make_cap_map()
+        intelligence = _make_intelligence()
+
+        response_with_unknown = json.dumps({
+            "unknown_id": {
+                "differentiators": ["Something"],
+                "sales_plays": [],
+                "proof_points": [],
+            },
+            "data_platform": {
+                "differentiators": ["Valid diff"],
+                "sales_plays": [],
+                "proof_points": [],
+            },
+        })
+        mock_response = MagicMock()
+        mock_response.content = response_with_unknown
+
+        with patch("backend.agents.seller_intelligence.ChatAnthropic") as mock_cls:
+            mock_llm = MagicMock()
+            mock_llm.ainvoke = AsyncMock(return_value=mock_response)
+            mock_cls.return_value = mock_llm
+
+            result = await auto_link_intelligence(
+                cap_map, intelligence, "anthropic", "claude-sonnet-4-6"
+            )
+
+        # unknown_id is in result (from LLM) but not applied to any entry
+        dp = next(e for e in cap_map.entries if e.id == "data_platform")
+        assert dp.differentiators == ["Valid diff"]
+
+    @pytest.mark.asyncio
+    async def test_handles_unparseable_response(self, tmp_capability_map_path, tmp_config_dir) -> None:
+        cap_map = _make_cap_map()
+        intelligence = _make_intelligence()
+
+        mock_response = MagicMock()
+        mock_response.content = "I can't do that."
+
+        with patch("backend.agents.seller_intelligence.ChatAnthropic") as mock_cls:
+            mock_llm = MagicMock()
+            mock_llm.ainvoke = AsyncMock(return_value=mock_response)
+            mock_cls.return_value = mock_llm
+
+            result = await auto_link_intelligence(
+                cap_map, intelligence, "anthropic", "claude-sonnet-4-6"
+            )
+
+        assert result == {}
+        # Entries unchanged
+        dp = next(e for e in cap_map.entries if e.id == "data_platform")
+        assert dp.differentiators == []

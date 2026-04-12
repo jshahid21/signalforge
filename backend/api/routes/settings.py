@@ -90,6 +90,61 @@ async def extract_seller_intelligence(body: ExtractIntelligenceRequest) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Auto-Link Intelligence to Capability Map
+# ---------------------------------------------------------------------------
+
+
+@router.post("/capability-map/auto-link")
+async def auto_link_capability_intelligence() -> dict:
+    """Trigger auto-linking of seller intelligence to capability map entries.
+
+    Uses LLM to match scraped differentiators, sales plays, and proof points
+    to the most relevant capability entries.
+    """
+    from backend.agents.seller_intelligence import auto_link_intelligence
+    from backend.config.capability_map import load_capability_map
+
+    config = load_config()
+    cap_map = load_capability_map()
+    if cap_map is None or not cap_map.entries:
+        raise HTTPException(
+            status_code=422,
+            detail="No capability map configured. Create or generate a capability map first.",
+        )
+
+    intelligence = config.seller_profile.seller_intelligence
+    has_items = (
+        intelligence.differentiators
+        or intelligence.sales_plays
+        or intelligence.proof_points
+    )
+    if not has_items:
+        raise HTTPException(
+            status_code=422,
+            detail="No seller intelligence available. Extract intelligence from your website first.",
+        )
+
+    llm_model = config.api_keys.llm_model
+    if not llm_model:
+        raise HTTPException(
+            status_code=422,
+            detail="LLM model is not configured. Open Settings → API Keys and set LLM provider and model.",
+        )
+
+    try:
+        mapping = await auto_link_intelligence(
+            cap_map, intelligence, config.api_keys.llm_provider, llm_model,
+        )
+        return {
+            "status": "linked",
+            "linked": mapping,
+            "entries_updated": len(mapping),
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Auto-linking failed: {exc}")
+
+
+# ---------------------------------------------------------------------------
 # API Keys
 # ---------------------------------------------------------------------------
 
