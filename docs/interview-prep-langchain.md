@@ -25,6 +25,63 @@ LangChain has several products. Here's what each one is in plain English:
 
 ---
 
+## Part 1b: What SignalForge Actually Does
+
+SignalForge is an AI-powered sales signal intelligence engine. You give it company
+names, and it runs an 8-stage pipeline that ends with persona-targeted outreach emails.
+Here's what each stage does and why it matters:
+
+**1. Signal Ingestion** — Searches for buying signals (job postings, web articles)
+using a cost-tiered system. Tier 1 starts cheap with JSearch job postings (~$0.001/call).
+If too few signals come back, it escalates to Tier 2 using Tavily web search (~$0.015/call).
+This keeps costs low when signals are easy to find.
+
+**2. Signal Qualification** — Scores signals using a hybrid approach: 40% deterministic
+keyword matching against your capability map + 60% LLM-assessed severity (recency,
+specificity, technical depth, buying intent). A composite threshold of 0.45 filters noise.
+If the LLM fails, it falls back to keyword-only scoring.
+
+**3. Research** — Gathers company context: what the company does, their tech stack,
+hiring trends. Three sub-tasks run concurrently using the LLM.
+
+**4. Solution Mapping** — Maps the signal to vendor-agnostic solution areas. Not "they
+need your product" but "they have a container orchestration scaling problem that maps
+to platform engineering." This keeps the analysis honest. Confidence score (0-100) gates
+downstream behavior.
+
+**5. Persona Generation** — Creates 2-4 buyer personas based on signal type. Hiring
+signals → technical buyers and influencers. Cost signals → economic buyers. Security
+signals → blockers. Each persona gets a priority score for outreach sequencing. LLM
+customizes titles per company; falls back to templates if LLM fails.
+
+**6. HITL Gate** — Pipeline **pauses** here. You review personas, edit titles, add
+custom personas, remove ones that don't fit. Only confirmed personas proceed. This is
+where human judgment matters most.
+
+**7. Synthesis** — Generates deep per-persona insights: core pain point, technical
+context, buyer relevance. This is the bridge between the signal and the email.
+
+**8. Draft Generation** — Writes the actual email. Confidence-gated:
+- Score < 35 → draft skipped entirely (signal too weak)
+- Score 35-60 → hedged, exploratory tone
+- Score ≥ 60 → full solution pitch with seller context
+
+Tone adapts to persona type — economic buyers get ROI framing, technical buyers get
+architecture language, influencers get pain-point narratives, blockers get risk
+mitigation framing.
+
+**Also includes:**
+- **Seller Intelligence** — auto-scrapes your company website for differentiators,
+  sales plays, proof points, and competitive positioning. Injected into draft generation.
+- **Chat Assistant** — per-company Q&A with streaming responses. Has full context on
+  signals, personas, and drafts.
+- **Memory** — approved drafts are stored and used as few-shot examples for future
+  sessions, keeping tone consistent.
+- **Cost Control** — $0.50 default budget per session. Budget warnings at 75%. Per-stage
+  cost tracking. Every LLM call checks budget before executing.
+
+---
+
 ## Part 2: LangGraph Concepts — From Zero
 
 ### What is a "graph"?
@@ -462,6 +519,37 @@ This means:
 > individually checkpointed. That might avoid the Send serialization issue since
 > tasks persist their own results."
 
+### Q: How do you track cost across parallel LLM calls?
+
+> "Every agent function returns two things: updated state and cost incurred. The
+> calling function adds up cost and checks budget before each LLM call.
+>
+> At the graph level, total_cost_usd in AgentState uses an operator.add reducer. So
+> when 5 companies run in parallel and each spends $0.08, the merged state correctly
+> shows $0.40 — not just the last company's cost.
+>
+> We also have a budget warning system. At 75% consumption, the backend sends a
+> WebSocket event so the frontend can alert the user. And every stage checks remaining
+> budget before making an LLM call — if budget is exhausted, it skips the call and
+> uses a cheaper fallback instead of crashing.
+>
+> Default budget is $0.50 per session, configurable in settings."
+
+### Q: Why LangGraph instead of just Python async (asyncio.gather)?
+
+> "Two reasons: typed state management and reducer-based merging.
+>
+> With asyncio.gather, I'd dispatch 5 coroutines and get 5 results. But then I need
+> to manually merge them — add up costs, collect failures, merge per-company states.
+> If I add a new field later, I need to update the merge logic.
+>
+> LangGraph's Annotated reducers declare the merge strategy at the type level. When I
+> write total_cost_usd: Annotated[float, operator.add], every parallel branch
+> automatically contributes to the sum. No merge code to maintain.
+>
+> The other reason is observability. LangGraph's astream gives me node-level events.
+> With asyncio.gather, I'd need to build my own event system from scratch."
+
 ### Q: How would you deploy this on LangGraph Platform?
 
 > "Our langgraph.json is already configured — it points to our build_pipeline function.
@@ -538,3 +626,77 @@ When asked "what would you build next?" — these show you think beyond just cod
 3. **Parallel + reducers** — 5 branches merging costs and results
 4. **The HITL workaround** — graph exits → API pauses → user picks → API calls synthesis directly
 5. **The LangSmith flywheel** — tracing → feedback → datasets → eval → prompt improvement
+
+---
+
+## Part 12: Where Everything Lives in the Code
+
+Use this when you want to look at the actual code for any concept.
+
+### LangGraph Pipeline
+
+| What | File | What to Look At |
+|------|------|----------------|
+| Graph assembly (3 nodes, edges) | `backend/pipeline.py` lines 228-244 | `StateGraph`, `add_node`, `add_edge` |
+| Per-company pipeline (all 8 stages) | `backend/pipeline.py` lines 47-205 | The monolithic function |
+| Parallel dispatch (Send) | `backend/agents/orchestrator.py` lines 161-187 | `dispatch_companies()` returns `list[Send]` |
+| State with reducers | `backend/models/state.py` lines 203-228 | `AgentState` with `Annotated` types |
+| LangGraph Studio config | `langgraph.json` | Entry point for Studio |
+
+### Pipeline Stages (Each Agent)
+
+| Stage | File | Main Function |
+|-------|------|---------------|
+| Signal Ingestion | `backend/agents/signal_ingestion.py` | `run_signal_ingestion()` |
+| Signal Qualification | `backend/agents/signal_qualification.py` | `run_signal_qualification()` |
+| Research | `backend/agents/research.py` | `run_research()` |
+| Solution Mapping | `backend/agents/solution_mapping.py` | `run_solution_mapping()` |
+| Persona Generation | `backend/agents/persona_generation.py` | `run_persona_generation()` |
+| HITL Gate | `backend/agents/hitl_gate.py` | `run_persona_selection_gate()` |
+| Synthesis | `backend/agents/synthesis.py` | `run_synthesis()` |
+| Draft Generation | `backend/agents/draft.py` | `run_drafts_for_company()` |
+
+### HITL (Human-in-the-Loop)
+
+| What | File | What to Look At |
+|------|------|----------------|
+| Gate that pauses pipeline | `backend/agents/hitl_gate.py` lines 28-41 | Sets status to AWAITING_HUMAN |
+| Apply user's selection | `backend/agents/hitl_gate.py` lines 44-62 | Validates and applies persona IDs |
+| Resume outside graph | `backend/api/routes/personas.py` lines 104-267 | Calls synthesis + drafts directly |
+| LangGraph node (signaling) | `backend/agents/hitl_gate.py` lines 65-87 | Returns awaiting flag |
+
+### LLM Usage
+
+| What | File | Pattern |
+|------|------|---------|
+| Standard LLM call | Every agent | `await llm.ainvoke([HumanMessage(content=prompt)])` |
+| Streaming LLM call | `backend/agents/chat_assistant.py` line 133 | `async for chunk in llm.astream(messages)` |
+| Provider routing | Every agent | `_make_llm()` → ChatAnthropic or ChatOpenAI |
+| Token tracking | Every agent | `response.usage_metadata` for token counts |
+
+### WebSocket & Streaming
+
+| What | File | What to Look At |
+|------|------|----------------|
+| Event broadcaster | `backend/api/websocket.py` | `ConnectionManager` class |
+| Pipeline streaming | `backend/api/routes/sessions.py` line 117 | `graph.astream()` loop |
+| Frontend WebSocket | `frontend/src/App.tsx` lines 179-210 | `connectWebSocket()` + event handler |
+| Frontend reconnection | `frontend/src/api/client.ts` lines 190-270 | `WsManager` with backoff |
+| Progress bar | `frontend/src/components/ProgressBar.tsx` | Stage matching |
+
+### LangSmith
+
+| What | File | What to Look At |
+|------|------|----------------|
+| LLM-as-judge eval | `tests/eval/draft_eval.py` | Rubric + scoring |
+| Config/settings | `backend/config/loader.py` | API key storage |
+
+### Other Key Files
+
+| What | File |
+|------|------|
+| Capability map (signal matching) | `backend/config/capability_map.py` |
+| Seller intelligence (web scraping) | `backend/agents/seller_intelligence.py` |
+| Config loader (all settings) | `backend/config/loader.py` |
+| Frontend main app | `frontend/src/App.tsx` |
+| Setup wizard | `frontend/src/components/SetupWizard.tsx` |
