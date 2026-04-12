@@ -18,11 +18,13 @@ Replace with:
 > **SignalForge — Proactive Sales Signal Intelligence Engine (LangGraph, FastAPI, React)**
 > Built a production-ready pipeline that discovers buying signals, qualifies them
 > with hybrid LLM+keyword scoring, generates buyer personas, and writes
-> persona-targeted outreach emails. Features parallel company processing via
-> LangGraph Send(), human-in-the-loop persona selection, LangSmith
-> tracing/feedback/eval integration, and graceful degradation at every stage.
-> Full-stack: React/TypeScript frontend with WebSocket real-time updates, FastAPI
-> backend, 400+ tests.
+> persona-targeted outreach emails. Evolved the LangGraph architecture from a
+> monolithic node with Send() parallel dispatch to a 7-node graph with
+> asyncio.gather — resolving a checkpointer serialization limitation and enabling
+> real-time streaming. Human-in-the-loop persona selection, full LangSmith
+> integration (tracing, feedback, eval datasets), and graceful degradation at
+> every stage. Full-stack: React/TypeScript frontend with WebSocket real-time
+> updates, FastAPI backend, 450+ tests.
 
 ### 3. Add JavaScript/TypeScript to Skills
 The job requires "Strong Python and JavaScript fundamentals." You built the
