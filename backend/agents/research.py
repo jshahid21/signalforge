@@ -117,6 +117,40 @@ investment priorities and growth areas. Focus on patterns, not individual roles.
         return None
 
 
+_INDUSTRY_TAXONOMY = [
+    "fintech", "healthcare", "e-commerce", "saas", "cybersecurity",
+    "devtools", "media", "logistics", "education", "enterprise_software", "other",
+]
+
+
+async def _run_industry_classification(
+    company_name: str,
+    signal_summary: str,
+    llm_provider: str,
+    llm_model: str,
+) -> str | None:
+    """Classify the target company into a standard industry taxonomy."""
+    if not llm_model:
+        return None
+    taxonomy_str = ", ".join(_INDUSTRY_TAXONOMY)
+    prompt = f"""Classify this company into exactly one industry category.
+
+Company: {company_name}
+Signal summary: {signal_summary}
+
+Categories: {taxonomy_str}
+
+Output ONLY the category name (one word, lowercase). If uncertain, output "other"."""
+    try:
+        from langchain_core.messages import HumanMessage
+        llm = _make_llm(llm_provider, llm_model, max_tokens=20)
+        response = await llm.ainvoke([HumanMessage(content=prompt)])
+        result = str(response.content).strip().lower().replace('"', "").replace("'", "")
+        return result if result in _INDUSTRY_TAXONOMY else "other"
+    except Exception:
+        return None
+
+
 @traceable(name="run_research")
 async def run_research(
     cs: CompanyState,
@@ -155,15 +189,16 @@ async def run_research(
     raw_signals = cs.get("raw_signals", [])
     signals_content = " ".join(s.get("content", "") for s in raw_signals)
 
-    # Run all 3 sub-tasks concurrently; return_exceptions captures individual failures
+    # Run all 4 sub-tasks concurrently; return_exceptions captures individual failures
     results = await asyncio.gather(
         _run_company_context(company_name, signal_summary, llm_provider, llm_model),
         _run_tech_stack_extraction(signals_content, llm_provider, llm_model),
         _run_hiring_signal_analysis(company_name, signals_content, llm_provider, llm_model),
+        _run_industry_classification(company_name, signal_summary, llm_provider, llm_model),
         return_exceptions=True,
     )
 
-    company_context_raw, tech_stack_raw, hiring_signals_raw = results
+    company_context_raw, tech_stack_raw, hiring_signals_raw, industry_raw = results
 
     partial = False
 
@@ -192,12 +227,20 @@ async def run_research(
     else:
         hiring_signals = hiring_signals_raw
 
+    # Resolve industry classification
+    if isinstance(industry_raw, Exception) or industry_raw is None:
+        industry: str | None = None
+        if isinstance(industry_raw, Exception):
+            partial = True
+    else:
+        industry = industry_raw
+
     # Partial if any result is missing (regardless of LLM config)
     if company_context is None or hiring_signals is None:
         partial = True
 
-    # Estimate cost: charge for sub-tasks that had LLM configured
-    cost_incurred = _LLM_COST_PER_SUBTASK * 3 if llm_model else 0.0
+    # Estimate cost: charge for sub-tasks that had LLM configured (now 4 sub-tasks)
+    cost_incurred = _LLM_COST_PER_SUBTASK * 4 if llm_model else 0.0
 
     research_result = ResearchResult(
         company_context=company_context,
@@ -208,6 +251,7 @@ async def run_research(
 
     cs = dict(cs)  # type: ignore[assignment]
     cs["research_result"] = research_result  # type: ignore[index]
+    cs["industry"] = industry  # type: ignore[index]
     cs["current_stage"] = "solution_mapping"  # type: ignore[index]
 
     return cs, cost_incurred  # type: ignore[return-value]

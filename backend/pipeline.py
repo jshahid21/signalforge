@@ -183,6 +183,7 @@ async def company_pipeline(input: CompanyInput) -> dict:
         llm_model=llm_model,
         current_total_cost=current_cost,
         max_budget_usd=max_budget,
+        capability_map=capability_map,
     )
     total_cost += synth_cost
     current_cost += synth_cost
@@ -199,6 +200,7 @@ async def company_pipeline(input: CompanyInput) -> dict:
         current_total_cost=current_cost,
         max_budget_usd=max_budget,
         few_shot_examples=few_shot,
+        capability_map=capability_map,
     )
     total_cost += draft_cost
 

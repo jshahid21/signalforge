@@ -85,23 +85,38 @@ except ImportError:
     SystemMessage = None  # type: ignore[assignment]
 
 
-def _build_seller_intelligence_section(seller_profile: SellerProfile) -> str:
+def _build_seller_intelligence_section(
+    seller_profile: SellerProfile,
+    capability_enrichment: dict | None = None,
+) -> str:
     """Build the seller intelligence section for the system prompt.
+
+    If capability_enrichment is provided (from matched capability entries),
+    use those specific items instead of the global intelligence lists for
+    differentiators, sales_plays, and proof_points.
 
     Returns empty string if no intelligence is available.
     """
     intelligence = seller_profile.get("seller_intelligence")
-    if not intelligence:
+    if not intelligence and not capability_enrichment:
         return ""
 
     parts: list[str] = []
 
-    differentiators = intelligence.get("differentiators", [])
+    # Use capability-specific enrichment if available, otherwise fall back to global
+    if capability_enrichment:
+        differentiators = capability_enrichment.get("differentiators", [])
+        sales_plays = capability_enrichment.get("sales_plays", [])
+        proof_points = capability_enrichment.get("proof_points", [])
+    else:
+        differentiators = (intelligence or {}).get("differentiators", [])
+        sales_plays = (intelligence or {}).get("sales_plays", [])
+        proof_points = (intelligence or {}).get("proof_points", [])
+
     if differentiators:
         diff_list = "\n".join(f"  - {d}" for d in differentiators[:5])
         parts.append(f"Key differentiators:\n{diff_list}")
 
-    sales_plays = intelligence.get("sales_plays", [])
     if sales_plays:
         plays_list = "\n".join(
             f"  - {sp.get('play', '')} (category: {sp.get('category', 'general')})"
@@ -111,7 +126,6 @@ def _build_seller_intelligence_section(seller_profile: SellerProfile) -> str:
             f"Sales plays (select the 1 most relevant to this prospect's signal; omit if none fit):\n{plays_list}"
         )
 
-    proof_points = intelligence.get("proof_points", [])
     if proof_points:
         pp_list = "\n".join(
             f"  - {pp.get('customer', '')}: {pp.get('summary', '')}"
@@ -139,6 +153,7 @@ def _build_seller_intelligence_section(seller_profile: SellerProfile) -> str:
 def _build_draft_system_prompt(
     seller_profile: Optional[SellerProfile],
     few_shot_examples: list,
+    capability_enrichment: dict | None = None,
 ) -> str:
     """Build the system prompt with seller profile, intelligence, and few-shot memory examples."""
     parts: list[str] = [
@@ -165,8 +180,10 @@ def _build_draft_system_prompt(
             "Do not force it."
         )
 
-        # Inject seller intelligence if available
-        intelligence_section = _build_seller_intelligence_section(seller_profile)
+        # Inject seller intelligence if available (prefer capability-specific enrichment)
+        intelligence_section = _build_seller_intelligence_section(
+            seller_profile, capability_enrichment=capability_enrichment,
+        )
         if intelligence_section:
             parts.append(intelligence_section)
     else:
@@ -264,6 +281,7 @@ async def run_draft(
     max_budget_usd: float,
     few_shot_examples: list | None = None,
     existing_draft: Optional[Draft] = None,
+    capability_enrichment: dict | None = None,
 ) -> tuple[Optional[Draft], float]:
     """Generate or regenerate a draft for a single (company, persona) pair.
 
@@ -319,6 +337,7 @@ async def run_draft(
     system_prompt = _build_draft_system_prompt(
         seller_profile=seller_profile,
         few_shot_examples=few_shot_examples or [],
+        capability_enrichment=capability_enrichment,
     )
     user_prompt = _build_draft_user_prompt(
         company_name=company_name,
@@ -392,6 +411,31 @@ async def run_draft(
     return draft, cost_incurred
 
 
+def _build_capability_enrichment(
+    matched_capability_ids: list[str],
+    capability_map,
+) -> dict | None:
+    """Merge enrichment data from all matched capability entries into a single dict."""
+    if not capability_map or not matched_capability_ids:
+        return None
+    import logging
+    logger = logging.getLogger(__name__)
+    entry_by_id = {e.id: e for e in capability_map.entries}
+    merged: dict = {"differentiators": [], "sales_plays": [], "proof_points": []}
+    for cap_id in matched_capability_ids:
+        entry = entry_by_id.get(cap_id)
+        if entry is None:
+            logger.warning("Stale matched_capability_id in draft: %s", cap_id)
+            continue
+        merged["differentiators"].extend(entry.differentiators)
+        merged["sales_plays"].extend(entry.sales_plays)
+        merged["proof_points"].extend(entry.proof_points)
+    # Return None if no enrichment data was found
+    if not any(merged.values()):
+        return None
+    return merged
+
+
 @traceable(name="run_drafts_for_company")
 async def run_drafts_for_company(
     cs: CompanyState,
@@ -401,6 +445,7 @@ async def run_drafts_for_company(
     current_total_cost: float,
     max_budget_usd: float,
     few_shot_examples: list | None = None,
+    capability_map=None,
 ) -> tuple[CompanyState, float]:
     """Generate drafts for all selected personas. Returns (updated_cs, cost_incurred)."""
     solution_mapping = cs.get("solution_mapping")
@@ -453,6 +498,10 @@ async def run_drafts_for_company(
 
     existing_drafts = dict(cs.get("drafts", {}))
 
+    # Build capability-specific enrichment from matched capability IDs
+    matched_ids = solution_mapping.get("matched_capability_ids", []) if solution_mapping else []
+    cap_enrichment = _build_capability_enrichment(matched_ids, capability_map)
+
     draft_tasks = [
         run_draft(
             cs=cs,  # type: ignore[arg-type]
@@ -464,6 +513,7 @@ async def run_drafts_for_company(
             max_budget_usd=max_budget_usd,
             few_shot_examples=few_shot_examples,
             existing_draft=existing_drafts.get(persona["persona_id"]),
+            capability_enrichment=cap_enrichment,
         )
         for persona in personas_to_draft
     ]
