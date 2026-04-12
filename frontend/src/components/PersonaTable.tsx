@@ -3,6 +3,7 @@
  */
 import { useState } from 'react'
 import type { Persona } from '../api/client'
+import { InfoTooltip } from './InfoTooltip'
 
 const CATEGORY_RATIONALE: Record<string, string> = {
   ml_ai: 'ML/AI investment signals detected — targeting the buying group most likely to own AI infrastructure decisions.',
@@ -135,8 +136,18 @@ export function PersonaTable({
           <tr className="border-b border-gray-200">
             {isHitlMode && <th className="py-2 w-8" />}
             <th className="py-2 text-left text-xs font-medium text-gray-500 uppercase">Persona</th>
-            <th className="py-2 text-left text-xs font-medium text-gray-500 uppercase">Role</th>
-            <th className="py-2 text-right text-xs font-medium text-gray-500 uppercase">Score</th>
+            <th className="py-2 text-left text-xs font-medium text-gray-500 uppercase">
+              <span className="inline-flex items-center">
+                Role
+                <InfoTooltip text="Buyer role in the decision process: Economic (budget), Technical (evaluation), Influencer, or Blocker." />
+              </span>
+            </th>
+            <th className="py-2 text-right text-xs font-medium text-gray-500 uppercase">
+              <span className="inline-flex items-center">
+                Score
+                <InfoTooltip text="Priority score (0–100%). Higher means this persona is more likely to engage." />
+              </span>
+            </th>
             <th className="py-2 w-16" />
           </tr>
         </thead>
