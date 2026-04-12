@@ -493,6 +493,10 @@ async def run_persona_generation(
     Returns (updated_cs, cost_incurred).
     """
     company_name = cs["company_name"]
+
+    # Mark current stage at entry so frontend progress bar tracks correctly
+    cs = dict(cs)  # type: ignore[assignment]
+    cs["current_stage"] = "persona_generation"  # type: ignore[index]
     qualified_signal = cs.get("qualified_signal")
     solution_mapping = cs.get("solution_mapping")
     research_result = cs.get("research_result")

@@ -4,20 +4,26 @@
  */
 import type { PipelineStatus } from '../api/client'
 
-const STAGES = ['signals', 'qualifying', 'researching', 'mapping', 'generating']
+const STAGES = ['signal_ingestion', 'signal_qualification', 'research', 'solution_mapping', 'persona_generation']
 
 const STAGE_LABELS: Record<string, string> = {
-  signals: 'Signals',
-  qualifying: 'Qualifying',
-  researching: 'Researching',
-  mapping: 'Mapping',
-  generating: 'Generating',
+  signal_ingestion: 'Signals',
+  signal_qualification: 'Qualifying',
+  research: 'Researching',
+  solution_mapping: 'Mapping',
+  persona_generation: 'Generating',
 }
 
+/** Stages that come after the 5-stage pipeline (post-generation). */
+const POST_PIPELINE_STAGES = ['awaiting_persona_selection', 'synthesis', 'draft', 'done']
+
 function stageIndex(stage: string | undefined | null): number {
-  const normalized = String(stage ?? '').toLowerCase().replace(/_/g, '')
-  const idx = STAGES.findIndex(s => normalized.includes(s))
-  return idx === -1 ? 0 : idx
+  const normalized = String(stage ?? '').toLowerCase()
+  const idx = STAGES.indexOf(normalized)
+  if (idx !== -1) return idx
+  // Post-pipeline stages should show all 5 stages as complete
+  if (POST_PIPELINE_STAGES.includes(normalized)) return STAGES.length
+  return 0
 }
 
 interface Props {
