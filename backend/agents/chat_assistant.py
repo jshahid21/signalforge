@@ -108,10 +108,9 @@ async def stream_chat_response(
         return
 
     try:
-        from langchain_anthropic import ChatAnthropic
         from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
     except ImportError:
-        yield "Chat assistant requires langchain_anthropic. Please install dependencies."
+        yield "Chat assistant requires langchain-core. Please install dependencies."
         return
 
     context_block = _build_context_block(cs, active_persona_id)
@@ -131,7 +130,16 @@ async def stream_chat_response(
     messages.append(HumanMessage(content=user_message))
 
     try:
-        llm = ChatAnthropic(model=llm_model, max_tokens=600, temperature=0.3)
+        # Detect provider from model name
+        from backend.config.loader import load_config
+        config = load_config()
+        provider = (config.api_keys.llm_provider or "").strip().lower()
+        if provider in ("openai", "gpt", "chatgpt", "open_ai"):
+            from langchain_openai import ChatOpenAI
+            llm = ChatOpenAI(model=llm_model, max_tokens=600, temperature=0.3)
+        else:
+            from langchain_anthropic import ChatAnthropic
+            llm = ChatAnthropic(model=llm_model, max_tokens=600, temperature=0.3)
         async for chunk in llm.astream(messages):
             if hasattr(chunk, "content") and chunk.content:
                 yield str(chunk.content)
