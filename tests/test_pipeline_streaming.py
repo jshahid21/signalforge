@@ -5,6 +5,7 @@ receives real-time WebSocket progress updates instead of one final update.
 """
 from __future__ import annotations
 
+from datetime import date, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -12,6 +13,12 @@ import pytest
 from backend.models.enums import PipelineStatus
 from backend.models.state import AgentState
 from backend.pipeline import build_pipeline
+
+
+def _recent_iso(days_ago: int) -> str:
+    # Tier 1 ingestion filters jobs older than 90 days from today, so fixtures
+    # must be computed relative to date.today() rather than hardcoded.
+    return (date.today() - timedelta(days=days_ago)).isoformat() + "T10:00:00Z"
 
 
 def _make_initial_state(company_names: list[str]) -> AgentState:
@@ -80,7 +87,7 @@ async def test_astream_emits_per_stage_chunks():
     mock_llm.ainvoke = _ainvoke
 
     jobs = [
-        {"job_title": "ML Engineer", "job_description": "ml platform kubernetes data pipeline", "job_apply_link": "https://example.com/1", "job_posted_at_datetime_utc": "2026-01-15T10:00:00Z"},
+        {"job_title": "ML Engineer", "job_description": "ml platform kubernetes data pipeline", "job_apply_link": "https://example.com/1", "job_posted_at_datetime_utc": _recent_iso(7)},
     ]
 
     with (
@@ -145,7 +152,7 @@ async def test_astream_tracks_stage_progression():
     mock_llm.ainvoke = _ainvoke
 
     jobs = [
-        {"job_title": "ML Engineer", "job_description": "ml platform kubernetes data pipeline", "job_apply_link": "https://example.com/1", "job_posted_at_datetime_utc": "2026-01-15T10:00:00Z"},
+        {"job_title": "ML Engineer", "job_description": "ml platform kubernetes data pipeline", "job_apply_link": "https://example.com/1", "job_posted_at_datetime_utc": _recent_iso(7)},
     ]
 
     with (

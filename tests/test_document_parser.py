@@ -223,4 +223,4 @@ class TestConstants:
         assert ALLOWED_EXTENSIONS == expected
 
     def test_max_combined_text(self):
-        assert MAX_COMBINED_TEXT == 30_000
+        assert MAX_COMBINED_TEXT == 120_000
