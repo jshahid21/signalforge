@@ -16,6 +16,8 @@ router = APIRouter(
 
 
 class ChatRequest(BaseModel):
+    """User turn for the per-company chat assistant SSE endpoint."""
+
     message: str
     conversation_history: list[dict] = []
     active_persona_id: Optional[str] = None

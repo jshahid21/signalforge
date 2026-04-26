@@ -43,6 +43,7 @@ class MemoryRecordORM(Base):
     used_as_example = Column(Integer, nullable=False, default=0)
 
     def to_dataclass(self) -> MemoryRecord:
+        """Convert this ORM row into the plain ``MemoryRecord`` dataclass for use outside SQLAlchemy."""
         return MemoryRecord(
             record_id=self.record_id,
             company_name=self.company_name,
@@ -57,6 +58,7 @@ class MemoryRecordORM(Base):
 
     @classmethod
     def from_dataclass(cls, record: MemoryRecord) -> "MemoryRecordORM":
+        """Build an ORM row from a ``MemoryRecord`` dataclass — does not add it to a session."""
         return cls(
             record_id=record.record_id,
             company_name=record.company_name,

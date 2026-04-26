@@ -33,6 +33,8 @@ def merge_dict(a: Dict, b: Dict) -> Dict:
 
 
 class RawSignal(TypedDict):
+    """Unprocessed signal as captured by the ingestion tier (job posting, blog mention, etc.)."""
+
     source: str             # e.g., "jsearch", "tavily", "blog"
     signal_type: str        # e.g., "job_posting", "engineering_blog", "funding_news"
     content: str            # Raw text / excerpt
@@ -42,6 +44,8 @@ class RawSignal(TypedDict):
 
 
 class QualifiedSignal(TypedDict):
+    """Signal after Signal Qualification scoring — one per company that passes the threshold."""
+
     company_id: str
     summary: str                    # LLM-generated signal summary
     signal_type: str
@@ -58,6 +62,8 @@ class QualifiedSignal(TypedDict):
 
 
 class ResearchResult(TypedDict):
+    """Output of the Research Agent — parallel sub-task findings for a company."""
+
     company_context: Optional[str]      # General company/market context
     tech_stack: Optional[List[str]]     # Explicit mentions only; no inference
     hiring_signals: Optional[str]       # Summary of hiring trends
@@ -65,6 +71,8 @@ class ResearchResult(TypedDict):
 
 
 class SolutionMappingOutput(TypedDict):
+    """Output of the Solution Mapping Agent — the core problem + matched capabilities (spec §5.5)."""
+
     core_problem: str
     solution_areas: List[str]           # Vendor-agnostic capability categories
     inferred_areas: List[str]           # Subset of solution_areas not in capability map
@@ -74,6 +82,8 @@ class SolutionMappingOutput(TypedDict):
 
 
 class Persona(TypedDict):
+    """A buying-group persona generated for a company (spec §5.6)."""
+
     persona_id: str
     title: str                          # e.g., "Head of Platform Engineering"
     targeting_reason: str               # Why this persona is relevant given the signal
@@ -85,6 +95,8 @@ class Persona(TypedDict):
 
 
 class SynthesisOutput(TypedDict):
+    """Per-(company, persona) synthesis bundle that feeds the Draft Agent (spec §5.8)."""
+
     core_pain_point: str
     technical_context: str
     solution_alignment: str
@@ -95,6 +107,8 @@ class SynthesisOutput(TypedDict):
 
 
 class Draft(TypedDict):
+    """A generated outreach draft for one (company, persona) pair (spec §5.9)."""
+
     draft_id: str
     company_id: str
     persona_id: str
@@ -107,6 +121,8 @@ class Draft(TypedDict):
 
 
 class CostMetadata(TypedDict):
+    """Per-company cost / token / tier-call accounting accumulated across the pipeline."""
+
     tier_1_calls: int
     tier_2_calls: int
     tier_3_calls: int
@@ -116,6 +132,8 @@ class CostMetadata(TypedDict):
 
 
 class CompanyError(TypedDict):
+    """Structured error appended to ``CompanyState.errors`` when a stage fails."""
+
     stage: str                          # Which agent/stage failed
     error_type: str
     message: str
@@ -123,16 +141,22 @@ class CompanyError(TypedDict):
 
 
 class SalesPlayDict(TypedDict):
+    """Lightweight TypedDict mirror of SalesPlay used inside AgentState payloads."""
+
     play: str
     category: str
 
 
 class ProofPointDict(TypedDict):
+    """Lightweight TypedDict mirror of ProofPoint used inside AgentState payloads."""
+
     customer: str
     summary: str
 
 
 class SellerIntelligenceDict(TypedDict, total=False):
+    """TypedDict mirror of SellerIntelligence as it travels through AgentState (all fields optional)."""
+
     differentiators: List[str]
     sales_plays: List[SalesPlayDict]
     proof_points: List[ProofPointDict]
@@ -141,6 +165,8 @@ class SellerIntelligenceDict(TypedDict, total=False):
 
 
 class SellerProfile(TypedDict):
+    """Seller-side context passed to every agent — copy of SellerProfileConfig in TypedDict form."""
+
     company_name: str
     portfolio_summary: str
     portfolio_items: List[str]
@@ -158,6 +184,8 @@ class SellerProfile(TypedDict):
 
 
 class CompanyState(TypedDict):
+    """Per-company isolated pipeline state — one entry per target company in ``AgentState.company_states``."""
+
     # Identity
     company_id: str
     company_name: str
@@ -208,6 +236,8 @@ class CompanyState(TypedDict):
 
 
 class AgentState(TypedDict):
+    """Root LangGraph state — shared across all nodes; parallel writes use the reducers above."""
+
     # Input
     target_companies: List[str]
     seller_profile: SellerProfile

@@ -48,6 +48,7 @@ app.include_router(chat.router)
 
 @app.get("/health")
 async def health() -> dict[str, str]:
+    """Liveness probe — returns ``{"status": "ok"}`` while the app is running."""
     return {"status": "ok"}
 
 

@@ -63,6 +63,7 @@ _MetaSession = None
 
 
 def _meta_db_path() -> Path:
+    """Return the session-metadata SQLite path, honouring SIGNALFORGE_SESSION_DB_PATH for tests."""
     override = os.environ.get("SIGNALFORGE_SESSION_DB_PATH")
     if override:
         return Path(override)
@@ -70,6 +71,7 @@ def _meta_db_path() -> Path:
 
 
 def _init_meta_db() -> None:
+    """Lazily build the metadata engine + sessionmaker; idempotently add the state_json column."""
     global _meta_engine, _MetaSession
     path = _meta_db_path()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -87,6 +89,7 @@ def _init_meta_db() -> None:
 
 
 def _get_meta_session():
+    """Return a SQLAlchemy session for the metadata DB, initialising the engine on first use."""
     if _MetaSession is None:
         _init_meta_db()
     return _MetaSession()
@@ -257,16 +260,20 @@ _registry: dict[str, ActiveSession] = {}
 
 
 def get_active_session(session_id: str) -> Optional[ActiveSession]:
+    """Return the in-memory ActiveSession for ``session_id``, or None if not registered."""
     return _registry.get(session_id)
 
 
 def register_session(session: ActiveSession) -> None:
+    """Add an ActiveSession to the in-memory registry (overwrites any existing entry)."""
     _registry[session.session_id] = session
 
 
 def deregister_session(session_id: str) -> None:
+    """Drop a session from the in-memory registry; safe to call for unknown ids."""
     _registry.pop(session_id, None)
 
 
 def generate_session_id() -> str:
+    """Return a new opaque session ID (UUID4 string)."""
     return str(uuid.uuid4())

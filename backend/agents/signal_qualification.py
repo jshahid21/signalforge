@@ -107,6 +107,7 @@ def parse_llm_severity_response(response_text: str) -> dict[str, float] | None:
 
 
 def _normalized_llm_provider(llm_provider: str) -> str:
+    """Canonicalise a provider string to ``"openai"`` or ``"anthropic"`` (default)."""
     p = (llm_provider or "").strip().lower()
     if p in ("openai", "gpt", "chatgpt", "open_ai"):
         return "openai"
@@ -114,6 +115,7 @@ def _normalized_llm_provider(llm_provider: str) -> str:
 
 
 def _message_content_to_text(content: Any) -> str:
+    """Flatten a LangChain message ``content`` (str | list of str/dict blocks) to plain text."""
     if isinstance(content, str):
         return content
     if isinstance(content, list):

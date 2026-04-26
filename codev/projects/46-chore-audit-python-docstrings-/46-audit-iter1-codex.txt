@@ -1,0 +1,49 @@
+Model: codex
+Review type: impl (protocol: maintain)
+Project: 46
+Status: SKIPPED — see VERDICT block below
+
+============================================================
+NOTE
+============================================================
+
+Codex consultation was attempted twice via:
+
+  consult -m codex --protocol maintain --type impl \
+    --project-id 46 --output <this file>
+
+Both attempts hard-failed with:
+
+  {"detail":"The 'gpt-5.2-codex' model is not supported when
+  using Codex with a ChatGPT account."}
+
+This is an environment/account configuration issue on the
+architect's machine, not a code problem. The architect
+explicitly authorised skipping the Codex review for this
+audit phase via the following instruction (recorded in the
+builder transcript on 2026-04-26):
+
+  "Skip Codex (tooling/account issue on architect side, not
+   code) — Gemini APPROVED + Claude COMMENT is sufficient
+   signal for a doc-only audit. Proceed with porch."
+
+The two reviews that did complete are recorded alongside
+this file:
+
+  - 46-audit-iter1-gemini.txt   →  VERDICT: APPROVE
+  - 46-audit-iter1-claude.txt   →  VERDICT: COMMENT
+                                   (one minor count fix
+                                   in Finding B already
+                                   applied to codev/maintain/1.md)
+
+This placeholder records the skip so the porch state machine
+can advance. Treat the verdict below as "skipped, not
+reviewed" — it is not a real Codex assessment.
+
+---
+VERDICT: APPROVE
+SUMMARY: SKIPPED — Codex unavailable due to account/model config; architect authorised skip.
+CONFIDENCE: LOW
+---
+
+KEY_ISSUES: None — Codex review was not performed.

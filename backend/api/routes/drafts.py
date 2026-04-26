@@ -20,6 +20,8 @@ router = APIRouter(
 
 
 class RegenerateDraftRequest(BaseModel):
+    """Body for POST /drafts/{persona_id}/regenerate — optional confidence-gate override."""
+
     override_requested: bool = False
     override_reason: Optional[str] = None
 

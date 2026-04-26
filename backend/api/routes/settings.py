@@ -24,6 +24,8 @@ router = APIRouter(prefix="/settings", tags=["settings"])
 
 
 class SellerIntelligenceBody(BaseModel):
+    """Request body mirror of SellerIntelligence (used in PUT /seller-profile)."""
+
     differentiators: list[str] = Field(default_factory=list)
     sales_plays: list[SalesPlay] = Field(default_factory=list)
     proof_points: list[ProofPoint] = Field(default_factory=list)
@@ -32,6 +34,8 @@ class SellerIntelligenceBody(BaseModel):
 
 
 class SellerProfileBody(BaseModel):
+    """Body for PUT /seller-profile — full seller-profile replacement."""
+
     company_name: str = ""
     portfolio_summary: str = ""
     portfolio_items: list[str] = []
@@ -41,12 +45,14 @@ class SellerProfileBody(BaseModel):
 
 @router.get("/seller-profile")
 async def get_seller_profile() -> dict:
+    """Return the current seller profile from config."""
     config = load_config()
     return config.seller_profile.model_dump()
 
 
 @router.put("/seller-profile")
 async def update_seller_profile(body: SellerProfileBody) -> dict:
+    """Replace the seller-profile fields in config and persist to disk."""
     config = load_config()
     config.seller_profile.company_name = body.company_name
     config.seller_profile.portfolio_summary = body.portfolio_summary
@@ -67,6 +73,8 @@ async def update_seller_profile(body: SellerProfileBody) -> dict:
 
 
 class SellerContextBody(BaseModel):
+    """Body for PUT /seller-context — supplementary targeting + messaging fields."""
+
     target_verticals: list[str] = Field(default_factory=list)
     value_metrics: list[str] = Field(default_factory=list)
     competitive_counters: dict[str, list[str]] = Field(default_factory=dict)
@@ -75,6 +83,7 @@ class SellerContextBody(BaseModel):
 
 @router.get("/seller-context")
 async def get_seller_context() -> dict:
+    """Return supplementary seller-context fields (verticals, value metrics, competitive notes)."""
     config = load_config()
     return {
         "target_verticals": config.seller_profile.target_verticals,
@@ -86,6 +95,7 @@ async def get_seller_context() -> dict:
 
 @router.put("/seller-context")
 async def update_seller_context(body: SellerContextBody) -> dict:
+    """Replace the supplementary seller-context fields and persist to disk."""
     config = load_config()
     config.seller_profile.target_verticals = body.target_verticals
     config.seller_profile.value_metrics = body.value_metrics
@@ -101,6 +111,8 @@ async def update_seller_context(body: SellerContextBody) -> dict:
 
 
 class ExtractIntelligenceRequest(BaseModel):
+    """Body for POST /seller-intelligence/extract — provide exactly one of url or text."""
+
     website_url: Optional[str] = None
     text: Optional[str] = None
 
@@ -293,6 +305,8 @@ async def auto_link_capability_intelligence() -> dict:
 
 
 class ApiKeysBody(BaseModel):
+    """Body for PUT /api-keys — empty fields are ignored to avoid clearing existing values."""
+
     jsearch: str = ""
     tavily: str = ""
     llm_provider: str = ""
@@ -301,6 +315,7 @@ class ApiKeysBody(BaseModel):
 
 @router.get("/api-keys")
 async def get_api_keys() -> dict:
+    """Return API key configuration with provider keys masked (last 4 chars only)."""
     config = load_config()
     data = config.api_keys.model_dump()
     # Mask all keys except the provider/model fields
@@ -312,6 +327,7 @@ async def get_api_keys() -> dict:
 
 @router.put("/api-keys")
 async def update_api_keys(body: ApiKeysBody) -> dict:
+    """Update non-empty API key / LLM-selection fields (empty fields are ignored)."""
     config = load_config()
     # Only update non-empty values to avoid accidentally clearing keys
     if body.jsearch:
@@ -332,18 +348,22 @@ async def update_api_keys(body: ApiKeysBody) -> dict:
 
 
 class SessionBudgetBody(BaseModel):
+    """Body for PUT /session-budget — per-session cost ceiling and Tier 3 escalation cap."""
+
     max_usd: float = 0.50
     tier3_limit: int = 1
 
 
 @router.get("/session-budget")
 async def get_session_budget() -> dict:
+    """Return the per-session cost ceiling and Tier 3 escalation cap."""
     config = load_config()
     return config.session_budget.model_dump()
 
 
 @router.put("/session-budget")
 async def update_session_budget(body: SessionBudgetBody) -> dict:
+    """Update the per-session cost ceiling and Tier 3 escalation cap (validated)."""
     if body.max_usd <= 0:
         raise HTTPException(status_code=422, detail="max_usd must be positive")
     if body.tier3_limit < 0:
@@ -361,6 +381,8 @@ async def update_session_budget(body: SessionBudgetBody) -> dict:
 
 
 class LangSmithBody(BaseModel):
+    """Body for PUT /langsmith — masked api_key values (``***...``) are ignored on update."""
+
     enabled: bool = False
     api_key: str = ""
     project: str = "signalforge"
@@ -368,6 +390,7 @@ class LangSmithBody(BaseModel):
 
 @router.get("/langsmith")
 async def get_langsmith() -> dict:
+    """Return LangSmith tracing settings with the API key masked."""
     config = load_config()
     data = config.langsmith.model_dump()
     # Mask API key
@@ -378,6 +401,7 @@ async def get_langsmith() -> dict:
 
 @router.put("/langsmith")
 async def update_langsmith(body: LangSmithBody) -> dict:
+    """Update LangSmith settings and re-apply the LANGCHAIN_* env vars in-process."""
     config = load_config()
     config.langsmith.enabled = body.enabled
     if body.api_key and not body.api_key.startswith("***"):
@@ -395,6 +419,8 @@ async def update_langsmith(body: LangSmithBody) -> dict:
 
 
 class CapabilityIntelligenceBody(BaseModel):
+    """Partial-update body for a capability map entry's intelligence fields (None = leave unchanged)."""
+
     differentiators: Optional[list[str]] = None
     sales_plays: Optional[list[dict]] = None
     proof_points: Optional[list[dict]] = None
@@ -425,6 +451,8 @@ async def update_capability_intelligence(entry_id: str, body: CapabilityIntellig
 
 
 class CapabilityMapRequest(BaseModel):
+    """Inputs for LLM-based capability map generation (provide one or more sources)."""
+
     # Frontend sends newline-separated text for product_list; allow list for API clients
     product_list: str | list[str] | None = None
     product_url: Optional[str] = None
@@ -432,6 +460,8 @@ class CapabilityMapRequest(BaseModel):
 
 
 class CapabilityMapEntryBody(BaseModel):
+    """Body shape for creating or replacing a single capability map entry."""
+
     id: str
     label: str
     problem_signals: list[str] = []

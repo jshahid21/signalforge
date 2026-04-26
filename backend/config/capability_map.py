@@ -16,6 +16,8 @@ from .loader import load_config
 
 
 class CapabilityMapEntry:
+    """A single capability — keyword signals plus the seller's solution areas, plays, and proof."""
+
     __slots__ = (
         "id", "label", "problem_signals", "solution_areas",
         "differentiators", "sales_plays", "proof_points",
@@ -35,6 +37,7 @@ class CapabilityMapEntry:
         self.proof_points: list[dict[str, str]] = data.get("proof_points") or []
 
     def as_dict(self) -> dict[str, Any]:
+        """Return the entry as a YAML-serialisable dict."""
         return {
             "id": self.id,
             "label": self.label,
@@ -47,11 +50,14 @@ class CapabilityMapEntry:
 
 
 class CapabilityMap:
+    """A versioned collection of CapabilityMapEntry, loaded from / persisted to YAML."""
+
     def __init__(self, entries: list[CapabilityMapEntry], version: str = "1.0") -> None:
         self.entries = entries
         self.version = version
 
     def as_dict(self) -> dict[str, Any]:
+        """Return the map as a YAML-serialisable dict (matches the on-disk schema)."""
         return {
             "version": self.version,
             "capabilities": [e.as_dict() for e in self.entries],

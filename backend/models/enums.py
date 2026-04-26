@@ -3,12 +3,16 @@ from enum import Enum
 
 
 class SignalTier(str, Enum):
+    """Cost tier of a signal source — drives escalation rules in signal_ingestion (spec §7)."""
+
     TIER_1 = "tier_1"   # Low cost: job postings, lightweight public signals
     TIER_2 = "tier_2"   # Moderate: web search, blog/engineering signals
     TIER_3 = "tier_3"   # High cost: deep enrichment
 
 
 class PipelineStatus(str, Enum):
+    """Lifecycle status for a company pipeline run (and the parent session)."""
+
     PENDING = "pending"
     RUNNING = "running"
     AWAITING_HUMAN = "awaiting_human"
@@ -22,6 +26,8 @@ class PipelineStatus(str, Enum):
 
 
 class HumanReviewReason(str, Enum):
+    """Reason a company was flagged for human review (spec §5.5)."""
+
     LOW_CONFIDENCE = "low_confidence"
     SIGNAL_AMBIGUOUS = "signal_ambiguous"
     PERSONA_UNRESOLVED = "persona_unresolved"

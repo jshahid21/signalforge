@@ -28,11 +28,15 @@ router = APIRouter(prefix="/sessions", tags=["sessions"])
 
 
 class StartSessionRequest(BaseModel):
+    """Body for POST /sessions — companies to run plus an optional seller-profile override."""
+
     company_names: list[str]
     seller_profile: Optional[dict] = None  # overrides config if provided
 
 
 class SessionResponse(BaseModel):
+    """Session metadata returned by the session create / fetch endpoints."""
+
     session_id: str
     status: str
     company_names: list[str]
