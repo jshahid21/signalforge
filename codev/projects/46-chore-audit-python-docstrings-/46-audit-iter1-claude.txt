@@ -1,0 +1,85 @@
+I need to find the spec, plan, and implementation files. Let me explore the project structure first.Now I have a clear picture. This is a **MAINTAIN protocol, Audit phase** for project #46 (chore: audit Python docstrings). The builder has completed the audit — a read-only analysis phase that produced findings in `codev/maintain/1.md`. Let me verify the audit claims by spot-checking a few of the referenced files.
+
+Good — the spot-check is back. Now let me verify one more thing: the protocol expectations for the audit phase.I now have everything I need. Here's my review:
+
+---
+
+## Implementation Review: Project #46 — Audit Phase (Python Docstrings)
+
+### Context
+
+This is the **Audit phase** of the MAINTAIN protocol. The scope is a read-only scan of Python docstrings across `backend/` and `tests/`. The deliverable is `codev/maintain/1.md` — an audit report documenting coverage, gaps, and prioritised remediation recommendations for the CLEAN phase. **No code changes are expected in this phase.**
+
+---
+
+### 1. Spec/Protocol Adherence
+
+The MAINTAIN audit prompt asks the builder to:
+
+| Requirement | Met? | Notes |
+|---|---|---|
+| Determine base commit | ✅ | `89846ec` documented |
+| Scan for dead code / stale docs | ✅ | Scoped to docstrings (appropriate given the ticket title); stale docstrings explicitly checked and found clean |
+| Create `codev/maintain/NNN.md` | ✅ | `codev/maintain/1.md` created |
+| Document findings with file paths | ✅ | Findings A–H with specific files, line numbers, counts |
+| Recommended actions | ✅ | Three-tier prioritised remediation plan |
+
+The audit prompt template is oriented toward dead code/unused deps (it's generic for all MAINTAIN runs), but the builder correctly scoped to docstrings per the ticket title. The template checklist items (dead code removal, unused deps, etc.) are left unchecked, correctly indicating they're out of scope for this docs-only run. **Good scoping discipline.**
+
+---
+
+### 2. Quality of the Audit Report
+
+**Strengths:**
+- **Methodology is transparent.** AST walking via `ast.get_docstring`, manual spot-checks, and explicit note about *not* running `ruff` pydocstyle (with rationale). This is auditor-grade.
+- **Coverage table is clear and actionable.** Layer-by-layer breakdown with percentages makes it trivial to prioritise.
+- **Staleness verification is thorough.** The builder cross-referenced spec section numbers (§5.x, §6.2, etc.), reducer annotations, event schemas, and even specific commit hashes. This goes well above the baseline.
+- **Tier system for CLEAN phase is well-designed.** Tier 1 (one-liners) → Tier 2 (requires thought) → Tier 3 (selective) → Out of scope. This makes the CLEAN phase estimable (~50 one-line additions across ~10 files).
+- **Deferred items are explicitly called out** (ruff config, field-level Pydantic descriptions) with clear rationale.
+
+---
+
+### 3. Accuracy Spot-Check
+
+I verified five claims from the report against the actual files:
+
+| Claim | Verified? |
+|---|---|
+| `enums.py`: 3 of 3 classes missing docstrings | ✅ Correct |
+| `state.py`: 15 of 16 TypedDicts missing (only `CompanyInput` has one) | ✅ Correct |
+| `settings.py`: 8 of 19 route handlers documented | ✅ Correct |
+| `pipeline.py`: 4 node wrappers undocumented, `persona_generation_node` documented | ✅ Correct |
+| `websocket.py`: "9 of 11 methods missing" | ⚠️ Minor inaccuracy |
+
+**Finding on websocket.py:** `ConnectionManager` has **9 methods total** (not 11), with **1** having a docstring (`broadcast`) and **8** missing. The audit says "9 of 11 methods missing" — the total count is off by 2. The functional conclusion (most methods undocumented) is correct, but the numbers don't match. This is a minor reporting error, not a substantive one.
+
+---
+
+### 4. Missing Items / Gaps
+
+- **No "Changes Since Last Run" section.** The template calls for a `git log` of commits since the last maintenance run. Since this is run #1, this could be noted as "N/A — first run" rather than omitted entirely. Very minor.
+- **No explicit count of total Python files.** The report says "47 files" under `backend/` and "32 files" under `tests/` but doesn't show how these were counted. Not a problem, just noting for completeness.
+
+---
+
+### 5. Phase Boundary Check
+
+The audit is strictly read-only — no code edits were made. The untracked files are limited to the builder scaffolding (`.builder-prompt.txt`, `.builder-role.md`, `.builder-start.sh`) and the audit output itself. **No violations of the audit-phase contract.**
+
+---
+
+```
+---
+VERDICT: COMMENT
+SUMMARY: Thorough, well-structured audit with one minor count error in websocket.py (9/11 should be 8/9)
+CONFIDENCE: HIGH
+---
+```
+
+**KEY_ISSUES:**
+- **Minor:** Finding B (websocket.py) reports "9 of 11 methods missing" but `ConnectionManager` has 9 methods total, not 11. 8 of 9 are missing docstrings. The builder should correct this before the CLEAN phase relies on these numbers.
+
+**Positive callouts:**
+- Staleness verification was impressively thorough (spec section cross-refs, commit-level checks)
+- The three-tier CLEAN phase roadmap is well-prioritised and gives a concrete scope estimate (~50 one-liners across ~10 files)
+- Appropriate use of "leave as-is" / "out of scope" boundaries to avoid scope creep

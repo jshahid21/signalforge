@@ -24,10 +24,12 @@ class ConnectionManager:
         self._connections: dict[str, set[WebSocket]] = {}
 
     async def connect(self, websocket: WebSocket, session_id: str) -> None:
+        """Accept a WebSocket and register it under the given session for future broadcasts."""
         await websocket.accept()
         self._connections.setdefault(session_id, set()).add(websocket)
 
     def disconnect(self, websocket: WebSocket, session_id: str) -> None:
+        """Remove a WebSocket from a session's connection set; drop the session entry when empty."""
         conns = self._connections.get(session_id, set())
         conns.discard(websocket)
         if not conns:
@@ -56,6 +58,7 @@ class ConnectionManager:
         status: str,
         company_state: dict | None = None,
     ) -> None:
+        """Emit a per-company stage transition (running/completed/failed) with optional state snapshot."""
         import enum
         event: dict[str, Any] = {
             "type": "stage_update",
@@ -78,6 +81,7 @@ class ConnectionManager:
         await self.broadcast(session_id, event)
 
     async def broadcast_pipeline_complete(self, session_id: str) -> None:
+        """Notify clients that the session pipeline finished — UI should fetch final results."""
         await self.broadcast(session_id, {
             "type": "pipeline_complete",
             "session_id": session_id,
@@ -88,6 +92,7 @@ class ConnectionManager:
         session_id: str,
         awaiting: dict[str, list],
     ) -> None:
+        """Notify clients that one or more companies need persona selection (HITL gate)."""
         await self.broadcast(session_id, {
             "type": "hitl_required",
             "session_id": session_id,
@@ -99,6 +104,7 @@ class ConnectionManager:
         session_id: str,
         pct_used: float,
     ) -> None:
+        """Warn clients that the session is approaching its cost ceiling (``pct_used`` is 0–100)."""
         await self.broadcast(session_id, {
             "type": "budget_warning",
             "session_id": session_id,
@@ -106,6 +112,7 @@ class ConnectionManager:
         })
 
     async def broadcast_error(self, session_id: str, message: str) -> None:
+        """Notify clients of a session-level error — UI should surface the message."""
         await self.broadcast(session_id, {
             "type": "error",
             "session_id": session_id,

@@ -24,16 +24,22 @@ from pydantic import BaseModel, Field
 
 
 class SalesPlay(BaseModel):
+    """A named go-to-market play extracted from seller intelligence."""
+
     play: str
     category: str
 
 
 class ProofPoint(BaseModel):
+    """A customer reference / case study used to back a sales play."""
+
     customer: str
     summary: str
 
 
 class SellerIntelligence(BaseModel):
+    """Structured intelligence about the seller (extracted from website or pasted text)."""
+
     differentiators: list[str] = Field(default_factory=list)
     sales_plays: list[SalesPlay] = Field(default_factory=list)
     proof_points: list[ProofPoint] = Field(default_factory=list)
@@ -42,6 +48,8 @@ class SellerIntelligence(BaseModel):
 
 
 class SellerProfileConfig(BaseModel):
+    """Seller-side context: company identity, portfolio, intelligence, and outreach signals."""
+
     company_name: str = ""
     portfolio_summary: str = ""
     portfolio_items: list[str] = Field(default_factory=list)
@@ -54,6 +62,8 @@ class SellerProfileConfig(BaseModel):
 
 
 class ApiKeysConfig(BaseModel):
+    """Provider credentials and the active LLM provider/model selection."""
+
     jsearch: str = ""
     tavily: str = ""
     llm_provider: str = ""
@@ -61,17 +71,23 @@ class ApiKeysConfig(BaseModel):
 
 
 class SessionBudgetConfig(BaseModel):
+    """Per-session cost guardrails: total USD ceiling and Tier 3 escalation cap."""
+
     max_usd: float = 0.50
     tier3_limit: int = 1
 
 
 class LangSmithConfig(BaseModel):
+    """LangSmith tracing settings — enables observability when ``enabled=True``."""
+
     enabled: bool = False
     api_key: str = ""
     project: str = "signalforge"
 
 
 class SignalForgeConfig(BaseModel):
+    """Top-level SignalForge configuration persisted to ``~/.signalforge/config.json``."""
+
     seller_profile: SellerProfileConfig = Field(default_factory=SellerProfileConfig)
     api_keys: ApiKeysConfig = Field(default_factory=ApiKeysConfig)
     session_budget: SessionBudgetConfig = Field(default_factory=SessionBudgetConfig)

@@ -137,6 +137,7 @@ async def _run_stage_node(
 
 
 async def signal_ingestion_node(state: AgentState) -> dict:
+    """LangGraph node — fan out signal_ingestion across active companies in parallel."""
     config = load_config()
     return await _run_stage_node(
         state,
@@ -149,6 +150,7 @@ async def signal_ingestion_node(state: AgentState) -> dict:
 
 
 async def signal_qualification_node(state: AgentState) -> dict:
+    """LangGraph node — fan out signal_qualification across active companies in parallel."""
     return await _run_stage_node(
         state,
         "signal_qualification",
@@ -158,10 +160,12 @@ async def signal_qualification_node(state: AgentState) -> dict:
 
 
 async def research_node(state: AgentState) -> dict:
+    """LangGraph node — fan out the research agent (with its sub-tasks) across active companies."""
     return await _run_stage_node(state, "research", run_research)
 
 
 async def solution_mapping_node(state: AgentState) -> dict:
+    """LangGraph node — fan out solution_mapping across active companies in parallel."""
     return await _run_stage_node(
         state,
         "solution_mapping",

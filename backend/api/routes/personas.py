@@ -23,11 +23,15 @@ router = APIRouter(prefix="/sessions/{session_id}/companies/{company_id}/persona
 
 
 class ConfirmPersonasRequest(BaseModel):
+    """Body for the HITL persona-confirmation endpoint (selected + any user-added custom personas)."""
+
     selected_persona_ids: list[str]
     custom_personas: list[dict] = []    # Optional custom personas added by user
 
 
 class EditPersonaRequest(BaseModel):
+    """Body for editing an existing persona's title or targeting rationale (partial update)."""
+
     title: Optional[str] = None
     targeting_reason: Optional[str] = None
 

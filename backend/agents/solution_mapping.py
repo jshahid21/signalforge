@@ -103,6 +103,11 @@ Output ONLY valid JSON, no commentary:
 
 
 def _capability_map_to_text(capability_map: CapabilityMap | None) -> str:
+    """Render the capability map as one line per entry for embedding in the LLM prompt.
+
+    Format per entry: ``- [id: <id>] <label> | signals: a, b, c | areas: x, y``
+    (signals truncated to 5, areas to 3; falls back to a placeholder when the map is empty/None).
+    """
     if not capability_map:
         return "(No capability map configured — generate solution areas from first principles.)"
     lines = []
