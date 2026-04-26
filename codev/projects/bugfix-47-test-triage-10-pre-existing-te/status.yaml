@@ -1,0 +1,12 @@
+id: bugfix-47
+title: test-triage-10-pre-existing-te
+protocol: bugfix
+phase: complete
+plan_phases: []
+current_plan_phase: null
+gates: {}
+iteration: 1
+build_complete: false
+history: []
+started_at: '2026-04-26T14:17:22.207Z'
+updated_at: '2026-04-26T14:30:51.504Z'

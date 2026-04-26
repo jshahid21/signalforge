@@ -12,9 +12,16 @@ Scenarios covered:
 """
 from __future__ import annotations
 
+from datetime import date, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+
+
+def _recent_iso(days_ago: int) -> str:
+    # Tier 1 ingestion filters jobs older than 90 days from today, so fixtures
+    # must be computed relative to date.today() rather than hardcoded.
+    return (date.today() - timedelta(days=days_ago)).isoformat() + "T10:00:00Z"
 
 from backend.agents.hitl_gate import apply_persona_selection, run_persona_selection_gate
 from backend.agents.signal_ingestion import compute_signal_density
@@ -678,9 +685,9 @@ async def test_fixture_qualified_company_reaches_persona_stage():
     # Step 1: Ingestion with keyword-rich signals (Tier 1 sufficient)
     mock_jsearch = MagicMock()
     mock_jsearch.search_jobs = AsyncMock(return_value=[
-        {"job_title": "ML Platform Engineer", "job_description": "kubernetes ml platform data pipeline engineer", "job_apply_link": None, "job_posted_at_datetime_utc": "2026-01-15T10:00:00Z"},
-        {"job_title": "Data Platform Lead", "job_description": "ml kubernetes data pipeline platform scaling", "job_apply_link": None, "job_posted_at_datetime_utc": "2026-01-14T10:00:00Z"},
-        {"job_title": "Senior Platform Engineer", "job_description": "kubernetes data ml platform infrastructure", "job_apply_link": None, "job_posted_at_datetime_utc": "2026-01-13T10:00:00Z"},
+        {"job_title": "ML Platform Engineer", "job_description": "kubernetes ml platform data pipeline engineer", "job_apply_link": None, "job_posted_at_datetime_utc": _recent_iso(7)},
+        {"job_title": "Data Platform Lead", "job_description": "ml kubernetes data pipeline platform scaling", "job_apply_link": None, "job_posted_at_datetime_utc": _recent_iso(8)},
+        {"job_title": "Senior Platform Engineer", "job_description": "kubernetes data ml platform infrastructure", "job_apply_link": None, "job_posted_at_datetime_utc": _recent_iso(9)},
     ])
 
     cs, ingestion_cost = await run_signal_ingestion(
@@ -761,9 +768,9 @@ async def test_tier1_sufficient_tavily_not_called():
     # 3 keyword-rich Tier 1 signals → density >= threshold, no Tier 2 needed
     mock_jsearch = MagicMock()
     mock_jsearch.search_jobs = AsyncMock(return_value=[
-        {"job_title": "ML Platform Engineer", "job_description": "kubernetes ml platform data engineer", "job_apply_link": None, "job_posted_at_datetime_utc": "2026-01-15T10:00:00Z"},
-        {"job_title": "Platform Infrastructure Lead", "job_description": "ml kubernetes platform architecture", "job_apply_link": None, "job_posted_at_datetime_utc": "2026-01-14T10:00:00Z"},
-        {"job_title": "Senior ML Engineer", "job_description": "kubernetes ml platform model serving", "job_apply_link": None, "job_posted_at_datetime_utc": "2026-01-13T10:00:00Z"},
+        {"job_title": "ML Platform Engineer", "job_description": "kubernetes ml platform data engineer", "job_apply_link": None, "job_posted_at_datetime_utc": _recent_iso(7)},
+        {"job_title": "Platform Infrastructure Lead", "job_description": "ml kubernetes platform architecture", "job_apply_link": None, "job_posted_at_datetime_utc": _recent_iso(8)},
+        {"job_title": "Senior ML Engineer", "job_description": "kubernetes ml platform model serving", "job_apply_link": None, "job_posted_at_datetime_utc": _recent_iso(9)},
     ])
     mock_tavily = MagicMock()
     mock_tavily.search = AsyncMock(return_value=[])

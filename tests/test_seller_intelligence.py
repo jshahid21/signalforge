@@ -61,10 +61,10 @@ class TestBuildExtractionPrompt:
         assert "competitive_positioning" in prompt
 
     def test_truncates_long_content(self) -> None:
-        long_text = "x" * 50_000
+        # Feed input above the current 120K extraction ceiling so truncation must engage.
+        long_text = "x" * 200_000
         prompt = _build_extraction_prompt(long_text)
-        # The prompt should not include the full 50k chars
-        assert len(prompt) < 50_000
+        assert len(prompt) < 200_000
 
 
 # ---------------------------------------------------------------------------

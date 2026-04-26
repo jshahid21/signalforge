@@ -12,6 +12,7 @@ E2E scenarios:
 from __future__ import annotations
 
 import asyncio
+from datetime import date, timedelta
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -20,6 +21,12 @@ import pytest
 from backend.models.enums import PipelineStatus, SignalTier
 from backend.models.state import AgentState, CostMetadata, Persona, RawSignal
 from backend.pipeline import build_pipeline
+
+
+def _recent_iso(days_ago: int) -> str:
+    # Tier 1 ingestion filters jobs older than 90 days from today, so fixtures
+    # must be computed relative to date.today() rather than hardcoded.
+    return (date.today() - timedelta(days=days_ago)).isoformat() + "T10:00:00Z"
 
 
 # ---------------------------------------------------------------------------
@@ -154,9 +161,9 @@ def _patch_all_agents(
     """
     if jsearch_results is None:
         jsearch_results = [
-            {"job_title": "Senior ML Platform Engineer", "job_description": "kubernetes ml platform model registry data pipeline", "job_apply_link": "https://example.com/1", "job_posted_at_datetime_utc": "2026-01-15T10:00:00Z"},
-            {"job_title": "ML Infrastructure Lead", "job_description": "kubernetes ml platform scaling data engineering", "job_apply_link": "https://example.com/2", "job_posted_at_datetime_utc": "2026-01-14T10:00:00Z"},
-            {"job_title": "Platform Engineer ML", "job_description": "ml data platform kubernetes pipeline engineering", "job_apply_link": "https://example.com/3", "job_posted_at_datetime_utc": "2026-01-13T10:00:00Z"},
+            {"job_title": "Senior ML Platform Engineer", "job_description": "kubernetes ml platform model registry data pipeline", "job_apply_link": "https://example.com/1", "job_posted_at_datetime_utc": _recent_iso(7)},
+            {"job_title": "ML Infrastructure Lead", "job_description": "kubernetes ml platform scaling data engineering", "job_apply_link": "https://example.com/2", "job_posted_at_datetime_utc": _recent_iso(8)},
+            {"job_title": "Platform Engineer ML", "job_description": "ml data platform kubernetes pipeline engineering", "job_apply_link": "https://example.com/3", "job_posted_at_datetime_utc": _recent_iso(9)},
         ]
 
     mock_jsearch = AsyncMock(return_value=jsearch_results)

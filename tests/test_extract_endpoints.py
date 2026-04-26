@@ -10,6 +10,7 @@ from httpx import ASGITransport, AsyncClient
 from backend.api.app import app
 from backend.api import session_store
 from backend.config.loader import SellerIntelligence
+from backend.tools.document_parser import MAX_FILE_SIZE
 
 
 # ---------------------------------------------------------------------------
@@ -174,7 +175,7 @@ class TestExtractFromFiles:
         assert "Unsupported file type" in resp.json()["detail"]
 
     async def test_reject_oversized_file(self):
-        big_content = b"x" * (10 * 1024 * 1024 + 1)  # just over 10MB
+        big_content = b"x" * (MAX_FILE_SIZE + 1)
         async with AsyncClient(
             transport=ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -256,4 +257,4 @@ class TestPromptGeneralization:
         prompt = _build_extraction_prompt("Sample content about cloud security.")
         assert "sales collateral" in prompt.lower()
         assert "website" not in prompt.split("\n")[0].lower() or "website content" in prompt.lower()
-        assert "Content:" in prompt
+        assert "content to analyze" in prompt.lower()

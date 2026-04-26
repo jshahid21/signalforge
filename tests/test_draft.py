@@ -506,5 +506,8 @@ class TestDraftSystemPromptWithIntelligence:
 
     def test_prompt_stays_within_reasonable_length(self) -> None:
         prompt = _build_draft_system_prompt(_SELLER_PROFILE_WITH_INTELLIGENCE, [])
-        # Prompt should not be excessively long (under ~2000 chars for the system prompt)
-        assert len(prompt) < 3000
+        # Catches runaway growth (e.g. an intelligence/persona field accidentally
+        # interpolated unbounded). The system prompt was overhauled for tone and
+        # 3-sentence structure; current size is ~3.2K and should not exceed ~5K
+        # without an intentional design change.
+        assert len(prompt) < 5000
