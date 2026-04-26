@@ -10,6 +10,7 @@ from httpx import ASGITransport, AsyncClient
 from backend.api.app import app
 from backend.api import session_store
 from backend.config.loader import SellerIntelligence
+from backend.tools.document_parser import MAX_FILE_SIZE
 
 
 # ---------------------------------------------------------------------------
@@ -173,9 +174,8 @@ class TestExtractFromFiles:
         assert resp.status_code == 400
         assert "Unsupported file type" in resp.json()["detail"]
 
-    @pytest.mark.skip(reason="Pre-existing failure surfaced during #47 triage, out of scope. MAX_FILE_SIZE was raised to 50MB (commit 4c13365) but this test still sends 10MB+1 expecting 413; needs separate update to send >50MB.")
     async def test_reject_oversized_file(self):
-        big_content = b"x" * (10 * 1024 * 1024 + 1)  # just over 10MB
+        big_content = b"x" * (MAX_FILE_SIZE + 1)
         async with AsyncClient(
             transport=ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -251,11 +251,10 @@ class TestExtractFromTextFunction:
 
 class TestPromptGeneralization:
 
-    @pytest.mark.skip(reason="Pre-existing failure surfaced during #47 triage, out of scope. The 'Content:' header was removed in the seller_intelligence prompt overhaul; this assertion is stale and needs separate update.")
     def test_prompt_uses_generic_language(self):
         from backend.agents.seller_intelligence import _build_extraction_prompt
 
         prompt = _build_extraction_prompt("Sample content about cloud security.")
         assert "sales collateral" in prompt.lower()
         assert "website" not in prompt.split("\n")[0].lower() or "website content" in prompt.lower()
-        assert "Content:" in prompt
+        assert "content to analyze" in prompt.lower()
